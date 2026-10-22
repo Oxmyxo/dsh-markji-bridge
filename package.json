@@ -1,0 +1,58 @@
+{
+  "name": "dsh-markji-bridge",
+  "version": "1.0.0",
+  "description": "Give a DSH agent Markji (maimemo) cards: local SQLite cache with inline content, formatting-insensitive plain-text search, fast filtered queries, queued edits, card archive, remote-deletion detection, background sync with crash-resume, 3-way merge and conflict recovery.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Oxmyxo/dsh-markji-bridge.git"
+  },
+  "homepage": "https://github.com/Oxmyxo/dsh-markji-bridge",
+  "bugs": {
+    "url": "https://github.com/Oxmyxo/dsh-markji-bridge/issues"
+  },
+  "author": "Muluo",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "markji",
+    "maimemo",
+    "maimemo-openapi",
+    "flashcards",
+    "spaced-repetition",
+    "sync",
+    "sqlite",
+    "agent-tools"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "test:e2e": "node test/e2e-mock.mjs",
+    "smoke": "node test/index-smoke.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

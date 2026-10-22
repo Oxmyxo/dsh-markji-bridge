@@ -1,0 +1,41 @@
+# dsh-markji-bridge: persistent Markji (maimemo) card bridge for the agent.
+#
+# Every value below is a working default; change one only when it does not fit
+# this machine. The Markji OpenAPI Bearer token is read from the
+# MAIMEMO_MARKJI_OPENAPI_TOKEN environment variable; apiKey below is only an
+# optional override and should normally stay empty. baseUrl must not end with '/'.
+- insert:
+    - id: dsh-markji-bridge
+      name: dsh-markji-bridge
+      config:
+        # Register tools and start the auto-sync timer. false registers nothing.
+        enabled: true
+        # Optional token override. Leave empty: the token is read from the
+        # MAIMEMO_MARKJI_OPENAPI_TOKEN environment variable. Never logged.
+        apiKey: ''
+        # Markji OpenAPI base URL. The test server is rejected by this token.
+        baseUrl: 'https://open.maimemo.com/open'
+        # Local cache directory. Empty -> <homedir>/.dsh/dsh-markji-bridge.
+        dataDir: ''
+        # grammar_version used for new cards and for updates when the card's own value is unknown.
+        grammarVersion: 3
+        # Timeout in milliseconds for one HTTP attempt.
+        requestTimeoutMs: 20000
+        # Retries for network errors, 408, 429 and 5xx.
+        maxRetries: 3
+        # Deck list page size.
+        pageSize: 100
+        # A read pulls only when the cache is older than this many milliseconds.
+        pullTtlMs: 600000
+        # Idle auto sync: push queued edits and pull remote changes after quiet time.
+        autoSync: true
+        # How often the idle auto-sync timer checks for work, in milliseconds.
+        idleCheckMs: 30000
+        # Quiet time since the last markji tool call before auto work may start.
+        idleQuietMs: 120000
+        # Background pull cadence when idle and nothing is pending, in milliseconds.
+        autoPullMs: 900000
+        # Minimum delay before an automatic retry after a failed auto sync.
+        retryBackoffMs: 300000
+        # Cap for the JSON text rendered from one tool result.
+        maxOutputChars: 20000

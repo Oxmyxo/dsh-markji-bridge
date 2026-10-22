@@ -1,0 +1,16 @@
+node_modules/
+npm-debug.log*
+*.log
+*.tgz
+cache.db
+cache.db-*
+cache.corrupt-*
+cache.imported-*.json
+cache.v2-backup-*
+content.v2-backup-*
+.DS_Store
+Thumbs.db
+
+# internal design/verification material, not part of the public repo
+DESIGN.md
+test/verify/

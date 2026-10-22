@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Markji Bridge",
+    "description": "Agent tools for Markji cards: a single-file SQLite cache, plain-text search that ignores formatting, media and base64, fast filtered card search, queued edits, card archive, failure/conflict recovery, multi-process write locking, background sync tasks with progress and crash-resume, and file upload."
+  }
+}
