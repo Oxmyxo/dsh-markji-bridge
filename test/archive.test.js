@@ -78,7 +78,7 @@ test('archive moves a card into the deck archive chapter and prepends the notice
     assert.equal(result.chapters[0].local, true);
 
     const local = engine._internal.orderedCards().find((entry) => entry.id === card.id);
-    assert.ok(local.content.startsWith('[已归档 '), 'notice prepended: ' + local.content.slice(0, 40));
+    assert.ok(local.content.startsWith(String.raw`\[已归档 `), 'notice prepended: ' + local.content.slice(0, 40));
     assert.equal(local.chapter_id, result.chapters[0].chapter_id);
     assert.ok(local.pending, 'content update queued');
 
@@ -86,7 +86,7 @@ test('archive moves a card into the deck archive chapter and prepends the notice
     assert.equal(push.push.errors.length, 0, JSON.stringify(push.push.errors));
 
     const remote = mock.findCard(card.id);
-    assert.ok(remote.content.startsWith('[已归档 '), 'cloud content archived');
+    assert.ok(remote.content.startsWith(String.raw`\[已归档 `), 'cloud content archived');
     const archiveRemote = mock.state.chapters.find((entry) => entry.name === '归档');
     assert.ok(archiveRemote, 'archive chapter created in the cloud');
     assert.ok(archiveRemote.card_ids.includes(card.id), 'card moved in the cloud');
@@ -99,6 +99,22 @@ test('archive moves a card into the deck archive chapter and prepends the notice
     const after = engine._internal.orderedCards().find((entry) => entry.id === card.id);
     assert.equal(after.content, local.content, 'second archive is a no-op');
     assert.equal((after.content.match(/\[已归档/g) || []).length, 1, 'only one notice');
+  });
+});
+
+test('archive normalizes a legacy unescaped notice instead of adding a second one', async () => {
+  await withFixture('旧归档说明', async ({ engine, mock, card }) => {
+    const legacy = '[已归档 2023-11-14] 本卡片已归档，仅作历史保留，不再安排复习。\n\n正文';
+    await engine.updateCard({ card: card.id, content: legacy });
+    const result = await engine.archiveCards({ cards: [card.id] });
+    assert.equal(result.content_updated, 1);
+    const local = engine._internal.orderedCards().find((entry) => entry.id === card.id);
+    assert.ok(local.content.startsWith(String.raw`\[已归档 `));
+    assert.equal((local.content.match(/\[已归档/g) || []).length, 1, 'only one notice');
+    assert.ok(local.content.endsWith('\n\n正文'));
+    const push = await engine.sync({ mode: 'push' });
+    assert.equal(push.push.errors.length, 0, JSON.stringify(push.push.errors));
+    assert.match(mock.findCard(card.id).content, /^\\\[已归档 /);
   });
 });
 
@@ -229,7 +245,7 @@ test('a successful move does not clear a failed archive content update', async (
     const retry = await engine.sync({ mode: 'push' });
     assert.equal(retry.push.errors.length, 0, JSON.stringify(retry.push.errors));
     assert.equal(engine._internal.orderedCards().find((entry) => entry.id === card.id).last_error, undefined);
-    assert.match(mock.findCard(card.id).content, /^\[已归档 \d{4}-\d{2}-\d{2}\]/);
+    assert.match(mock.findCard(card.id).content, /^\\\[已归档 \d{4}-\d{2}-\d{2}\\\]/);
     assert.equal((await engine.failures()).summary.failed_cards, 0);
   } finally {
     if (engine) await engine.stop();
