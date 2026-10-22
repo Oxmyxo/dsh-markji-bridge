@@ -31,7 +31,7 @@ for (const name of expected) if (!registered.has(name)) throw new Error('missing
 const statusDef = registered.get('markji_status');
 const status = await statusDef.execute({});
 if (!status || !status.cache || typeof status.cache.cards !== 'number') throw new Error('status tool output: ' + JSON.stringify(status));
-if (status.version !== '1.0.0') throw new Error('status version: ' + status.version);
+if (status.version !== '1.0.1') throw new Error('status version: ' + status.version);
 if (!status.cache || typeof status.cache.bytes !== 'number') throw new Error('status cache: ' + JSON.stringify(status.cache));
 const handle = new DatabaseSync(join(dir, 'cache.db'), { readOnly: true });
 try {
