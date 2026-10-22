@@ -54,3 +54,9 @@ test('does not alter or trim the content it validates', () => {
   assert.equal(result.ok, true);
   assert.equal(result.stats.chars, content.length);
 });
+
+test('accepts adjacent Pic tags as one gallery but not inline after text', () => {
+  assert.equal(validateCardContent('[Pic#ID/a#][Pic#ID/b#]').ok, true);
+  assert.equal(validateCardContent('[Pic#ID/a#] [Pic#ID/b#]').ok, false, 'a gallery has no whitespace between tags');
+  assert.equal(validateCardContent('文字[Pic#ID/a#]').ok, false, 'Pic is block-level');
+});

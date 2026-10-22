@@ -4,14 +4,14 @@
 
 A Markji (maimemo) flashcard plugin for DeepSeek Harness (DSH) agents. It maintains a local cache of decks, chapters, and cards, so an agent can search, read, create, update, and archive cards. Every edit is written to a local queue first, then synced to the cloud in a pull → three-way merge → push order. Conflicts are reported separately and never block the rest of the cards.
 
-17 `markji_*` tools, implemented with Node.js built-in modules only, with no third-party dependencies. Use `markji_card_syntax` to validate raw Markji syntax before writing, and sync additionally checks that image / audio file ids referenced by the content exist in Markji.
+17 `markji_*` tools, implemented with Node.js built-in modules only, with no third-party dependencies. Use `markji_card_syntax action=help` to look up the raw Markji syntax, then `action=validate` to validate content before writing; sync additionally checks that image / audio file ids referenced by the content exist in Markji.
 
 ## Features
 
 - **Local cache**: one SQLite file, `cache.db`, stores indexes, card bodies, the pending queue, conflicts, and sync tasks. Routine searches and reads do not call the API.
 - **Plain-text search**: each card also stores a plain-text column with formatting markers, image/audio markers, data URIs, and base64 removed. Search matches the plain text only, so results stay clean and readable.
 - **Safe writes**: edits are queued; before pushing, remote changes are pulled and three-way merged, so stale data never overwrites the cloud. Conflicts are deduplicated per card and can be resolved individually.
-- **Write preflight and media check**: `markji_card_syntax` only validates raw Markji syntax; it never generates or rewrites content. Before pushing, `markji_sync` validates each pending body again and batch-queries the `Pic` / `Audio` file ids. Syntax errors, missing files, and query failures are recorded on the card while the queue is kept, so nothing is half-written.
+- **Syntax help, write preflight, and media check**: `markji_card_syntax action=help` returns the raw Markji syntax for one format or all formats; `action=validate` only validates content and never generates or rewrites it. Before pushing, `markji_sync` validates each pending body again and batch-queries the `Pic` / `Audio` file ids. Syntax errors, missing files, and query failures are recorded on the card while the queue is kept, so nothing is half-written.
 - **Background sync**: a sync task returns a handle immediately and exposes progress. After a crash or plugin restart, resume with the same handle without creating duplicate cloud objects.
 - **Archive**: move cards into the same deck's "Archive" chapter and insert an archive note into the body. Repeated calls are idempotent.
 - **Multi-process safety**: multiple DSH processes on one machine can share a cache directory; writes are serialized with a file lock.
@@ -74,6 +74,8 @@ Never commit the token or write it into a config file. The plugin's `apiKey` con
 markji_decks({ refresh: true })
 markji_search({ query: "sorting", deck: "Algorithms" })
 markji_card_get({ card: "<card_id>" })
+markji_card_syntax({ action: "help" })
+markji_card_syntax({ action: "help", format: "picture" })
 markji_card_syntax({ content: "<Markji rich text>" })
 markji_sync({ mode: "auto" })
 ```
@@ -89,7 +91,7 @@ The first call pulls cloud data (it can take a while for large accounts); later 
 | `markji_cards` | Paginate / search cached cards |
 | `markji_search` | Find cards by deck name, chapter name, plain text, and update time |
 | `markji_card_get` | Read one card: `content` (rich text) + `text` (plain text) |
-| `markji_card_syntax` | Validate raw Markji syntax; returns errors / warnings / stats / media refs |
+| `markji_card_syntax` | Look up syntax help (one format or all), or validate raw Markji syntax |
 | `markji_card_create` | Create a card (raw `content` only) |
 | `markji_card_update` | Update card content |
 | `markji_card_archive` | Archive cards into the "Archive" chapter |
@@ -113,7 +115,7 @@ The first call pulls cloud data (it can take a while for large accounts); later 
 | `markji_cards` | `deck?` `chapter?` `query?` `limit?` `offset?` | `{total, offset, limit, has_more, cards, cache}` |
 | `markji_search` | `query?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, filters, cards, cache}` |
 | `markji_card_get` | `card` `deck?` | `{card}` |
-| `markji_card_syntax` | `content` `action?: validate` | `{ok, errors, warnings, stats, media}` |
+| `markji_card_syntax` | `action?: validate/help`; validate: `content`; help: `format?` | validate: `{ok, errors, warnings, stats, media}`; help: `{ok, action, format, rules, nesting, formats}` |
 | `markji_card_create` | `deck` `chapter` `content` `order?` `grammar_version?` | `{ok, card_id, deck_id, chapter_id, status, changed, pending, message}` |
 | `markji_card_update` | `card` `content` `grammar_version?` | `{ok, card_id, status, changed, pending, message}` |
 | `markji_card_archive` | `cards` (non-empty array) | `{ok, archived, content_updated, already_archived, moved, chapters, status, pending, message}` |
@@ -125,6 +127,18 @@ The first call pulls cloud data (it can take a while for large accounts); later 
 | `markji_status` | none | `{version, data_dir, cache_file, configured, base_url, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
 | `markji_conflict_resolve` | `id` `strategy: keep_local/keep_remote/use_content` `content?` | `{ok, id, entity, strategy, state, changed}` |
 | `markji_file` | `action: upload/query`; upload: `path` `deck?`; query: `ids` `expires?` | upload: `{file}`; query: `{files}` |
+
+### Syntax help
+
+`markji_card_syntax` has two modes:
+
+```text
+markji_card_syntax({ action: "help" })                     // every format
+markji_card_syntax({ action: "help", format: "picture" })  // just pictures
+markji_card_syntax({ content: "<Markji rich text>" })      // validate content
+```
+
+For `action=help`, omit `format` or pass `all`; pass `basic` for just the general rules and nesting matrix. Supported format ids are `text-style`, `cloze`, `audio`, `card-ref`, `paragraph`, `choice`, `picture`, `formula`, and `answer-line`; the corresponding tag (for example `Pic`) and Chinese aliases (for example `图片`) are also accepted. Help is static and never inspects or rewrites content; the syntax follows the [Markji syntax guide](https://tutuji333.github.io/markji-faq/questions/content/card-syntax-guide/).
 
 ### Return structures
 
@@ -327,20 +341,20 @@ Common issues:
 
 | Environment | Result |
 | --- | --- |
-| Windows + Node 25.2.1 | Real-account testing: sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, crash resume; unit 87/87, E2E 13/13, smoke 17 tools. |
-| WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Repository copied to the Linux filesystem (`/tmp`): unit 87/87, E2E 13/13, entry smoke 17 tools. |
+| Windows + Node 25.2.1 | Real-account testing: sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, crash resume; unit 92/92, E2E 13/13, smoke 17 tools. |
+| WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Repository copied to the Linux filesystem (`/tmp`): unit 92/92, E2E 13/13, entry smoke 17 tools. |
 | macOS | Not tested on real hardware; the code uses only Node built-in modules and should work. |
 
 The WSL verification ran the repository's tests and entry smoke check directly in Linux; it did not install a second DSH inside WSL. To actually use the plugin under WSL, DSH itself should also run in that distribution.
 
-The syntax validator and media preflight added in 1.4.1 are covered by the mock HTTP end-to-end and local integration tests. The real-account checks in the table above were performed before this change; no live token was available for a fresh real-account media query.
+The syntax validator and media preflight added in 1.4.1, and the syntax help added in 1.4.2, are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test; syntax help is static and makes no network calls. The real-account checks in the table above were performed before these changes; no live token was available for a fresh real-account media query.
 
 ## Development and testing
 
 Node >= 22.13 is required. Run from the repository source:
 
 ```bash
-node --test "test/*.test.js"   # unit / integration tests (87)
+node --test "test/*.test.js"   # unit / integration tests (92)
 node test/e2e-mock.mjs         # mock-server end-to-end (13)
 node test/index-smoke.mjs      # entry smoke test (17 tools)
 ```

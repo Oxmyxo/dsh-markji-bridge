@@ -4,14 +4,14 @@
 
 给 DeepSeek Harness（DSH）的 agent 用的墨墨记忆卡（Markji）插件。它在本地维护一份卡组 / 章节 / 卡片缓存，agent 可以搜索、阅读、新建、修改、归档卡片；所有修改先写入本地队列，再按「先拉取、三方合并、后推送」的顺序同步到云端，冲突单独报告，不影响其他卡片。
 
-17 个 `markji_*` 工具，只用 Node 内置模块实现，无第三方依赖。写卡前可先用 `markji_card_syntax` 按原始 Markji 语法校验正文，推送时还会检查正文里的图片 / 音频文件是否可用。
+17 个 `markji_*` 工具，只用 Node 内置模块实现，无第三方依赖。写卡前可先用 `markji_card_syntax` 的 `action=help` 查询原始 Markji 语法，再用 `action=validate` 校验正文；推送时还会检查正文里的图片 / 音频文件是否可用。
 
 ## 特性
 
 - **本地缓存**：单个 SQLite 文件 `cache.db`，索引、卡片正文、待推送队列、冲突和同步任务都在一个库里，日常搜索和阅读不请求 API。
 - **纯文本搜索**：每张卡另存一列去掉格式标记、图片 / 音频标记、data URI 和 base64 的纯文本，搜索只匹配纯文本，结果干净可读。
 - **安全写入**：修改先排队，推送前先拉取远端变更并三方合并，不会用旧数据覆盖云端；冲突按卡片去重，可逐条解决。
-- **写前校验与媒体预检**：`markji_card_syntax` 只检查原始 Markji 语法，不生成或改写内容；`markji_sync` 推送前再次校验正文，并批量查询 `Pic` / `Audio` 引用的文件 id。语法错误、文件缺失或查询失败都会记录到该卡并保留队列，不会只写一半。
+- **语法帮助、写前校验与媒体预检**：`markji_card_syntax` 的 `action=help` 可按格式或全部查询原始 Markji 语法；`action=validate` 只检查正文，不生成或改写内容。`markji_sync` 推送前再次校验正文，并批量查询 `Pic` / `Audio` 引用的文件 id。语法错误、文件缺失或查询失败都会记录到该卡并保留队列，不会只写一半。
 - **后台同步**：同步任务立即返回句柄，可查进度；进程崩溃或插件重启后用同一句柄续跑，不重复创建云端对象。
 - **归档**：把卡片移入同卡组「归档」章节并在正文插入归档说明，重复调用幂等。
 - **多进程安全**：同一台机器的多个 DSH 进程可共用一个缓存目录，写入通过文件锁串行。
@@ -74,6 +74,8 @@ token 不要提交到仓库或写进配置文件。插件配置里的 `apiKey` �
 markji_decks({ refresh: true })
 markji_search({ query: "排序", deck: "算法" })
 markji_card_get({ card: "<card_id>" })
+markji_card_syntax({ action: "help" })
+markji_card_syntax({ action: "help", format: "picture" })
 markji_card_syntax({ content: "<Markji 富文本>" })
 markji_sync({ mode: "auto" })
 ```
@@ -89,7 +91,7 @@ markji_sync({ mode: "auto" })
 | `markji_cards` | 分页 / 搜索本地卡片 |
 | `markji_search` | 按卡组名、章节名、纯文本、更新时间快速找卡 |
 | `markji_card_get` | 读单张卡：`content`（富文本）+ `text`（纯文本） |
-| `markji_card_syntax` | 校验原始 Markji 语法，返回错误 / 警告 / 统计 / 媒体引用 |
+| `markji_card_syntax` | 查询语法帮助（指定格式或全部），或校验原始 Markji 语法 |
 | `markji_card_create` | 新建卡片（只接受原始 `content`） |
 | `markji_card_update` | 修改卡片内容 |
 | `markji_card_archive` | 归档卡片到「归档」章节 |
@@ -113,7 +115,7 @@ markji_sync({ mode: "auto" })
 | `markji_cards` | `deck?` `chapter?` `query?` `limit?` `offset?` | `{total, offset, limit, has_more, cards, cache}` |
 | `markji_search` | `query?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, filters, cards, cache}` |
 | `markji_card_get` | `card` `deck?` | `{card}` |
-| `markji_card_syntax` | `content` `action?: validate` | `{ok, errors, warnings, stats, media}` |
+| `markji_card_syntax` | `action?: validate/help`；validate：`content`；help：`format?` | validate：`{ok, errors, warnings, stats, media}`；help：`{ok, action, format, rules, nesting, formats}` |
 | `markji_card_create` | `deck` `chapter` `content` `order?` `grammar_version?` | `{ok, card_id, deck_id, chapter_id, status, changed, pending, message}` |
 | `markji_card_update` | `card` `content` `grammar_version?` | `{ok, card_id, status, changed, pending, message}` |
 | `markji_card_archive` | `cards`（非空数组） | `{ok, archived, content_updated, already_archived, moved, chapters, status, pending, message}` |
@@ -125,6 +127,18 @@ markji_sync({ mode: "auto" })
 | `markji_status` | 无 | `{version, data_dir, cache_file, configured, base_url, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
 | `markji_conflict_resolve` | `id` `strategy: keep_local/keep_remote/use_content` `content?` | `{ok, id, entity, strategy, state, changed}` |
 | `markji_file` | `action: upload/query`；upload：`path` `deck?`；query：`ids` `expires?` | upload：`{file}`；query：`{files}` |
+
+### 语法帮助
+
+`markji_card_syntax` 有两种用法：
+
+```text
+markji_card_syntax({ action: "help" })                     // 全部格式
+markji_card_syntax({ action: "help", format: "picture" })  // 只查图片
+markji_card_syntax({ content: "<Markji 富文本>" })         // 校验正文
+```
+
+`action=help` 时 `format` 可省略或写 `all`；写 `basic` 只返回通用规则和嵌套限制。支持的格式 id 为 `text-style`、`cloze`、`audio`、`card-ref`、`paragraph`、`choice`、`picture`、`formula`、`answer-line`，也接受对应标签（如 `Pic`）和中文别名（如 `图片`）。帮助内容是静态的，不会检查或改写正文；语法以 [Markji 制卡语法指南](https://tutuji333.github.io/markji-faq/questions/content/card-syntax-guide/) 为准。
 
 ### 返回结构
 
@@ -327,20 +341,20 @@ Failures = {
 
 | 环境 | 结果 |
 | --- | --- |
-| Windows + Node 25.2.1 | 真实账号实测：同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑；单元 87/87，E2E 13/13，冒烟 17 个工具。 |
-| WSL2 Ubuntu 26.04（Linux 6.18，Node v22.22.1） | 仓库复制到 Linux 文件系统（`/tmp`）后运行：单元 87/87，E2E 13/13，入口冒烟 17 个工具。 |
+| Windows + Node 25.2.1 | 真实账号实测：同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑；单元 92/92，E2E 13/13，冒烟 17 个工具。 |
+| WSL2 Ubuntu 26.04（Linux 6.18，Node v22.22.1） | 仓库复制到 Linux 文件系统（`/tmp`）后运行：单元 92/92，E2E 13/13，入口冒烟 17 个工具。 |
 | macOS | 未实机测试；代码只用 Node 内置模块，理论上可用。 |
 
 WSL 验证是在 Linux 环境里直接跑仓库的测试和入口烟测，不是在 WSL 里另装一套 DSH。要在 WSL 里实际使用，DSH 本身也应运行在该发行版中。
 
-1.4.1 新增的语法校验和媒体预检由 mock HTTP 端到端与本地集成测试覆盖；上表的真实账号项目是在此前版本完成的，本次没有可用的真实 token 重新做媒体查询。
+1.4.1 的语法校验 / 媒体预检和 1.4.2 的语法帮助由本地单元、入口烟测与 mock HTTP 端到端覆盖；语法帮助是静态数据，不访问网络。上表的真实账号实测完成于此前版本，本次没有可用的真实 token 重新做媒体查询。
 
 ## 开发与测试
 
 需要 Node >= 22.13，从仓库源码运行：
 
 ```bash
-node --test "test/*.test.js"   # 单元 / 集成测试（87 项）
+node --test "test/*.test.js"   # 单元 / 集成测试（92 项）
 node test/e2e-mock.mjs         # mock 服务端端到端（13 项）
 node test/index-smoke.mjs      # 入口烟测（17 个工具）
 ```

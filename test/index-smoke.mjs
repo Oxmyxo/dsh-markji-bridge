@@ -31,12 +31,20 @@ for (const name of expected) if (!registered.has(name)) throw new Error('missing
 const statusDef = registered.get('markji_status');
 const status = await statusDef.execute({});
 if (!status || !status.cache || typeof status.cache.cards !== 'number') throw new Error('status tool output: ' + JSON.stringify(status));
-if (status.version !== '1.4.1') throw new Error('status version: ' + status.version);
+if (status.version !== '1.4.2') throw new Error('status version: ' + status.version);
 const syntaxDef = registered.get('markji_card_syntax');
 const validSyntax = await syntaxDef.execute({ content: String.raw`正文 \[字面括号\]` });
 if (!validSyntax || validSyntax.ok !== true) throw new Error('syntax tool rejected valid content: ' + JSON.stringify(validSyntax));
 const badSyntax = await syntaxDef.execute({ content: '[X##bad]' });
 if (!badSyntax || badSyntax.ok !== false) throw new Error('syntax tool accepted invalid content: ' + JSON.stringify(badSyntax));
+const help = await syntaxDef.execute({ action: 'help' });
+if (!help || help.ok !== true || !Array.isArray(help.formats) || help.formats.length !== 9) {
+  throw new Error('syntax help output: ' + JSON.stringify(help));
+}
+const pictureHelp = await syntaxDef.execute({ action: 'help', format: 'picture' });
+if (!pictureHelp || pictureHelp.ok !== true || pictureHelp.tag !== 'Pic') {
+  throw new Error('syntax help format lookup: ' + JSON.stringify(pictureHelp));
+}
 if (!status.cache || typeof status.cache.bytes !== 'number') throw new Error('status cache: ' + JSON.stringify(status.cache));
 const handle = new DatabaseSync(join(dir, 'cache.db'), { readOnly: true });
 try {
