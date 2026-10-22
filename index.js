@@ -6,8 +6,9 @@
  *   client        Markji OpenAPI HTTP client (lib/api.js)
  *   store         one SQLite cache.db holding the index and card content (lib/store.js)
  *   engine        pull / merge / push state machine and idle auto-sync (lib/sync.js)
- *   tools         16 markji_* agent tools (lib/tools.js), incl. plain-text card search,
- *                 background sync tasks, archive and failure recovery
+ *   tools         18 markji_* agent tools (lib/tools.js), incl. plain-text card search,
+ *                 card-syntax guide/compiler, interactive editor, background sync tasks,
+ *                 archive and failure recovery
  *
  * Everything lives inside one ctx.effect: the effect registers the tools and
  * starts the engine, and its cleanup disposes the tools and stops the engine

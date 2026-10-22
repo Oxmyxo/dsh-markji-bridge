@@ -25,13 +25,13 @@ if (typeof disposer !== 'function') throw new Error('apply did not return the ef
 if (inject.join(',') !== 'tools') throw new Error('inject mismatch');
 await new Promise((r) => setTimeout(r, 150));
 const names = [...registered.keys()];
-if (names.length !== 16) throw new Error('expected 16 tools, got ' + names.length + ': ' + names.join(','));
-const expected = ['markji_decks','markji_chapters','markji_cards','markji_search','markji_card_get','markji_card_create','markji_card_update','markji_cards_move','markji_chapters_edit','markji_sync','markji_sync_status','markji_status','markji_conflict_resolve','markji_file'];
+if (names.length !== 18) throw new Error('expected 18 tools, got ' + names.length + ': ' + names.join(','));
+const expected = ['markji_decks','markji_chapters','markji_cards','markji_search','markji_card_get','markji_card_syntax','markji_card_create','markji_card_update','markji_card_editor','markji_card_archive','markji_cards_move','markji_chapters_edit','markji_sync','markji_sync_status','markji_failures','markji_status','markji_conflict_resolve','markji_file'];
 for (const name of expected) if (!registered.has(name)) throw new Error('missing tool ' + name);
 const statusDef = registered.get('markji_status');
 const status = await statusDef.execute({});
 if (!status || !status.cache || typeof status.cache.cards !== 'number') throw new Error('status tool output: ' + JSON.stringify(status));
-if (status.version !== '1.0.1') throw new Error('status version: ' + status.version);
+if (status.version !== '1.1.0') throw new Error('status version: ' + status.version);
 if (!status.cache || typeof status.cache.bytes !== 'number') throw new Error('status cache: ' + JSON.stringify(status.cache));
 const handle = new DatabaseSync(join(dir, 'cache.db'), { readOnly: true });
 try {

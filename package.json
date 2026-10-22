@@ -1,7 +1,7 @@
 {
   "name": "dsh-markji-bridge",
-  "version": "1.0.1",
-  "description": "Give a DSH agent Markji (maimemo) cards: local SQLite cache with inline content, formatting-insensitive plain-text search, fast filtered queries, queued edits, card archive, remote-deletion detection, background sync with crash-resume, 3-way merge and conflict recovery.",
+  "version": "1.1.0",
+  "description": "Give a DSH agent Markji (maimemo) cards: local SQLite cache, plain-text search, queued edits, a complete card-syntax guide/compiler, an interactive card editor with masks and media upload, archive, background sync with crash-resume, 3-way merge and conflict recovery.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -25,7 +25,10 @@
     "spaced-repetition",
     "sync",
     "sqlite",
-    "agent-tools"
+    "agent-tools",
+    "card-syntax",
+    "card-editor",
+    "image-mask"
   ],
   "engines": {
     "node": ">=22.13.0"
@@ -48,6 +51,7 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "README.en.md",
     "LICENSE"
   ],
   "dsh": {
