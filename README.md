@@ -6,14 +6,14 @@
 
 给 DeepSeek Harness（DSH）的 agent 用的墨墨记忆卡（Markji）插件。它在本地维护一份卡组 / 章节 / 卡片缓存，agent 可以搜索、阅读、新建、修改、归档卡片；所有修改先写入本地队列，再按「先拉取、三方合并、后推送」的顺序同步到云端，冲突单独报告，不影响其他卡片。
 
-19 个 `markji_*` 工具，只用 Node 内置模块实现，无第三方依赖。写卡前可先用 `markji_card_syntax` 的 `action=help` 查询原始 Markji 语法，再用 `action=validate` 校验正文；批量读写用 `markji_cards_get`、`markji_cards_create`、`markji_card_update` 的 `updates` 和 `markji_card_syntax` 的 `contents` / `cards`。推送时还会检查正文里的图片 / 音频文件是否可用。
+19 个 `markji_*` 工具，只用 Node 内置模块实现，无第三方依赖。写卡前可先用 `markji_card_syntax` 的 `action=help` 查询原始 Markji 语法，再用 `action=validate` 校验正文；批量读写用 `markji_cards_get`、`markji_cards_create`（支持跨章节 / 卡组）、`markji_card_update` 的 `updates` 和 `markji_card_syntax` 的 `contents` / `cards`。推送时还会检查正文里的图片 / 音频文件是否可用。
 
 ## 特性
 
 - **本地缓存**：单个 SQLite 文件 `cache.db`，索引、卡片正文、待推送队列、冲突和同步任务都在一个库里，日常搜索和阅读不请求 API。
 - **纯文本搜索**：每张卡另存一列去掉格式标记、图片 / 音频标记、data URI 和 base64 的纯文本，搜索只匹配纯文本，结果干净可读。
 - **安全写入**：修改先排队，推送前先拉取远端变更并三方合并，不会用旧数据覆盖云端；冲突按卡片去重，可逐条解决。
-- **语法帮助、批量操作、写前校验与媒体预检**：`markji_card_syntax` 的 `action=help` 可按格式或全部查询原始 Markji 语法；`action=validate` 支持单条 `content`、多条 `contents` 或按 `cards` 批量校验，只检查正文，不生成或改写内容。`markji_cards_get` 一次读取多张卡，`markji_cards_create` 和 `markji_card_update` 的 `updates` 一次排队多张卡的写入；`markji_sync` 推送前再次校验正文，并批量查询 `Pic` / `Audio` 引用的文件 id。语法错误、文件缺失或查询失败都会记录到该卡并保留队列，不会只写一半。
+- **语法帮助、批量操作、写前校验与媒体预检**：`markji_card_syntax` 的 `action=help` 可按格式或全部查询原始 Markji 语法；`action=validate` 支持单条 `content`、多条 `contents` 或按 `cards` 批量校验，只检查正文，不生成或改写内容。`markji_cards_get` 一次读取多张卡，`markji_cards_create` 可在一次调用中创建跨章节 / 卡组的卡片，`markji_card_update` 的 `updates` 一次排队多张卡的写入；`markji_sync` 推送前再次校验正文，并批量查询 `Pic` / `Audio` 引用的文件 id。语法错误、文件缺失或查询失败都会记录到该卡并保留队列，不会只写一半。
 - **后台同步**：同步任务立即返回句柄，可查进度；进程崩溃或插件重启后用同一句柄续跑，不重复创建云端对象。
 - **归档**：把卡片移入同卡组「归档」章节并在正文插入归档说明，重复调用幂等。
 - **多进程安全**：同一台机器的多个 DSH 进程可共用一个缓存目录，写入通过文件锁串行。
@@ -95,8 +95,9 @@ markji_sync({ mode: "auto" })
 markji_cards_get({ cards: ["<id1>", "<id2>"] })
 markji_card_syntax({ cards: ["<id1>", "<id2>"] })              // 校验已有卡片
 markji_card_syntax({ contents: ["<正文1>", "<正文2>"] })         // 校验未写入的正文
-markji_cards_create({ deck: "<deck>", chapter: "<chapter>", cards: [
-  { content: "<正文1>" }, { content: "<正文2>", order: 10 },
+markji_cards_create({ cards: [
+  { content: "<正文1>", deck: "<deck1>", chapter: "<chapter1>" },
+  { content: "<正文2>", deck: "<deck2>", chapter: "<chapter2>" },
 ] })
 markji_card_update({ updates: [
   { card: "<id1>", content: "<新正文1>" },
@@ -107,6 +108,7 @@ markji_cards_move({ cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
 ```
 
 - 新增批量入口（多卡读取、语法校验的 `contents` / `cards`、批量新建、`updates`）单次最多 50 项；归档和移动沿用原有的非空数组行为。`markji_cards_get` 会去重，未知 id 以单条错误返回，不会中断整批。
+- `markji_cards_create` 的顶层 `deck` / `chapter` 是默认值，可以省略；每项可写自己的 `deck` / `chapter`，所以一次调用能跨章节 / 卡组。未提供目标的项会逐条报错；每项的 `order` 相对于该项最终的目标章节。
 - 结果逐项列出 `ok` 和错误；写操作不是事务，坏项会被记录，其他项仍会排队。成功项仍需 `markji_sync` 推送。
 - `markji_cards_get` 默认不返回冗余的 `text`，需要时传 `include_text: true`。
 - 批量语法检查只做本地语法校验，不查询媒体文件是否存在；`markji_sync` 推送前仍会做媒体预检。
@@ -124,7 +126,7 @@ markji_cards_move({ cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
 | `markji_cards_get` | 按 id 批量读卡；未知 id 逐项报告 |
 | `markji_card_syntax` | 查询语法帮助，或单条 / 批量校验原始 Markji 语法 |
 | `markji_card_create` | 新建单张卡片（只接受原始 `content`） |
-| `markji_cards_create` | 在同一个卡组章节中批量新建卡片 |
+| `markji_cards_create` | 批量新建卡片，支持跨章节 / 卡组 |
 | `markji_card_update` | 修改单张卡片，或用 `updates` 批量修改 |
 | `markji_card_archive` | 归档卡片到「归档」章节 |
 | `markji_cards_move` | 移动卡片到其他章节 |
@@ -150,7 +152,7 @@ markji_cards_move({ cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
 | `markji_cards_get` | `cards`（1-50，去重）`include_text?` | `{ok, requested, found, missing, cards, cache}`；`cards` 每项 `{card_id, ok, card\|error}` |
 | `markji_card_syntax` | `action?: validate/help`；validate：`content` 或 `contents` 或 `cards`；help：`format?` | 单条 validate：`{ok, errors, warnings, stats, media}`；批量：`{ok, action, mode, source, total, valid, invalid, missing?, syntax_invalid?, results}`；help：`{ok, action, format, rules, nesting, formats}` |
 | `markji_card_create` | `deck` `chapter` `content` `order?` `grammar_version?` | `{ok, card_id, deck_id, chapter_id, status, changed, pending, message}` |
-| `markji_cards_create` | `deck` `chapter` `cards`（1-50，每项 `{content, order?, grammar_version?}`） | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}` |
+| `markji_cards_create` | `deck?` `chapter?` `cards`（1-50；每项 `{content, deck?, chapter?, order?, grammar_version?}`；顶层 `deck` / `chapter` 是默认值，单项可覆盖） | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`；`deck_id` / `chapter_id` 为顶层默认值，未提供时为 `null` |
 | `markji_card_update` | `card` `content` `grammar_version?`，或 `updates`（1-50，每项 `{card, content, grammar_version?}`） | 单条：`{ok, card_id, status, changed, pending, message}`；批量：`{ok, action, mode, total, updated, unchanged, failed, partial, results}` |
 | `markji_card_archive` | `cards`（非空数组） | `{ok, archived, content_updated, already_archived, moved, chapters, status, pending, message}` |
 | `markji_cards_move` | `cards` `to_chapter` `deck?` `order?` | `{ok, moved, to_chapter_id, status, pending, message}` |
@@ -379,20 +381,20 @@ Failures = {
 
 | 环境 | 结果 |
 | --- | --- |
-| Windows + Node 25.2.1 | 真实账号实测：同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑；单元 96/96，E2E 13/13，冒烟 19 个工具。 |
-| WSL2 Ubuntu 26.04（Linux 6.18，Node v22.22.1） | 仓库复制到 Linux 文件系统（`/tmp`）后运行：单元 96/96，E2E 13/13，入口冒烟 19 个工具。 |
+| Windows + Node 25.2.1 | 真实账号实测：同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑；单元 97/97，E2E 13/13，冒烟 19 个工具。 |
+| WSL2 Ubuntu 26.04（Linux 6.18，Node v22.22.1） | 在 WSL2 中运行：单元 97/97，E2E 13/13，入口冒烟 19 个工具。 |
 | macOS | 未实机测试；代码只用 Node 内置模块，理论上可用。 |
 
 WSL 验证是在 Linux 环境里直接跑仓库的测试和入口烟测，不是在 WSL 里另装一套 DSH。要在 WSL 里实际使用，DSH 本身也应运行在该发行版中。
 
-1.4.1 的语法校验 / 媒体预检、1.4.2 的语法帮助和 1.5.0 的批量读写由本地单元、入口烟测与 mock HTTP 端到端覆盖；批量操作是本地缓存 / 队列逻辑，不需要额外的 provider 接口。上表的真实账号实测完成于此前版本，本次没有可用的真实 token 重新做媒体查询。
+1.4.1 的语法校验 / 媒体预检、1.4.2 的语法帮助、1.5.0 的批量读写和 1.6.0 的跨章节 / 卡组批量新建由本地单元、入口烟测与 mock HTTP 端到端覆盖；批量操作是本地缓存 / 队列逻辑，不需要额外的 provider 接口。上表的真实账号实测完成于此前版本，本次没有用真实账号重新做媒体查询。
 
 ## 开发与测试
 
 需要 Node >= 22.13，从仓库源码运行：
 
 ```bash
-node --test "test/*.test.js"   # 单元 / 集成测试（96 项）
+node --test "test/*.test.js"   # 单元 / 集成测试（97 项）
 node test/e2e-mock.mjs         # mock 服务端端到端（13 项）
 node test/index-smoke.mjs      # 入口烟测（19 个工具）
 ```

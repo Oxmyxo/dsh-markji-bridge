@@ -6,14 +6,14 @@
 
 A Markji (maimemo) flashcard plugin for DeepSeek Harness (DSH) agents. It maintains a local cache of decks, chapters, and cards, so an agent can search, read, create, update, and archive cards. Every edit is written to a local queue first, then synced to the cloud in a pull → three-way merge → push order. Conflicts are reported separately and never block the rest of the cards.
 
-19 `markji_*` tools, implemented with Node.js built-in modules only, with no third-party dependencies. Use `markji_card_syntax action=help` to look up the raw Markji syntax, then `action=validate` to validate content before writing. For batch work use `markji_cards_get`, `markji_cards_create`, the `updates` array of `markji_card_update`, and the `contents` / `cards` arrays of `markji_card_syntax`. Sync additionally checks that image / audio file ids referenced by the content exist in Markji.
+19 `markji_*` tools, implemented with Node.js built-in modules only, with no third-party dependencies. Use `markji_card_syntax action=help` to look up the raw Markji syntax, then `action=validate` to validate content before writing. For batch work use `markji_cards_get`, `markji_cards_create` (cards may target different chapters or decks), the `updates` array of `markji_card_update`, and the `contents` / `cards` arrays of `markji_card_syntax`. Sync additionally checks that image / audio file ids referenced by the content exist in Markji.
 
 ## Features
 
 - **Local cache**: one SQLite file, `cache.db`, stores indexes, card bodies, the pending queue, conflicts, and sync tasks. Routine searches and reads do not call the API.
 - **Plain-text search**: each card also stores a plain-text column with formatting markers, image/audio markers, data URIs, and base64 removed. Search matches the plain text only, so results stay clean and readable.
 - **Safe writes**: edits are queued; before pushing, remote changes are pulled and three-way merged, so stale data never overwrites the cloud. Conflicts are deduplicated per card and can be resolved individually.
-- **Syntax help, batch operations, write preflight, and media check**: `markji_card_syntax action=help` returns the raw Markji syntax for one format or all formats; `action=validate` accepts one `content`, several `contents`, or several `cards` and only validates content, never generating or rewriting it. `markji_cards_get` reads several cards at once, while `markji_cards_create` and the `updates` array of `markji_card_update` queue several writes. Before pushing, `markji_sync` validates each pending body again and batch-queries the `Pic` / `Audio` file ids. Syntax errors, missing files, and query failures are recorded on the card while the queue is kept, so nothing is half-written.
+- **Syntax help, batch operations, write preflight, and media check**: `markji_card_syntax action=help` returns the raw Markji syntax for one format or all formats; `action=validate` accepts one `content`, several `contents`, or several `cards` and only validates content, never generating or rewriting it. `markji_cards_get` reads several cards at once, `markji_cards_create` can create cards across chapters or decks in one call, and the `updates` array of `markji_card_update` queues several writes. Before pushing, `markji_sync` validates each pending body again and batch-queries the `Pic` / `Audio` file ids. Syntax errors, missing files, and query failures are recorded on the card while the queue is kept, so nothing is half-written.
 - **Background sync**: a sync task returns a handle immediately and exposes progress. After a crash or plugin restart, resume with the same handle without creating duplicate cloud objects.
 - **Archive**: move cards into the same deck's "Archive" chapter and insert an archive note into the body. Repeated calls are idempotent.
 - **Multi-process safety**: multiple DSH processes on one machine can share a cache directory; writes are serialized with a file lock.
@@ -95,8 +95,9 @@ Use these entries when several cards are involved:
 markji_cards_get({ cards: ["<id1>", "<id2>"] })
 markji_card_syntax({ cards: ["<id1>", "<id2>"] })              // validate existing cards
 markji_card_syntax({ contents: ["<body1>", "<body2>"] })        // validate bodies not written yet
-markji_cards_create({ deck: "<deck>", chapter: "<chapter>", cards: [
-  { content: "<body1>" }, { content: "<body2>", order: 10 },
+markji_cards_create({ cards: [
+  { content: "<body1>", deck: "<deck1>", chapter: "<chapter1>" },
+  { content: "<body2>", deck: "<deck2>", chapter: "<chapter2>" },
 ] })
 markji_card_update({ updates: [
   { card: "<id1>", content: "<new body1>" },
@@ -107,6 +108,7 @@ markji_cards_move({ cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
 ```
 
 - The new batch entries (multi-card reads, syntax `contents` / `cards`, batch create, `updates`) accept at most 50 items. Archive and move keep their existing non-empty-array behavior. `markji_cards_get` collapses duplicate ids; unknown ids are returned as per-item errors and do not abort the batch.
+- The top-level `deck` / `chapter` of `markji_cards_create` are optional defaults; each item may set its own `deck` / `chapter`, so one call can span chapters or decks. An item with no target is reported as a per-item error; each item's `order` is relative to its final target chapter.
 - Results list `ok` and errors per item. Writes are not a transaction: bad items are reported while the other items are still queued, and successful items still need `markji_sync`.
 - `markji_cards_get` omits the redundant `text` view by default; pass `include_text: true` when needed.
 - Batch syntax validation is local only and does not query media availability; `markji_sync` still performs the media preflight.
@@ -124,7 +126,7 @@ markji_cards_move({ cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
 | `markji_cards_get` | Read several cards by id; unknown ids are reported per item |
 | `markji_card_syntax` | Look up syntax help, or validate raw Markji syntax one at a time or in batches |
 | `markji_card_create` | Create one card (raw `content` only) |
-| `markji_cards_create` | Create several cards in the same deck and chapter |
+| `markji_cards_create` | Create several cards, including across chapters or decks |
 | `markji_card_update` | Update one card, or several with `updates` |
 | `markji_card_archive` | Archive cards into the "Archive" chapter |
 | `markji_cards_move` | Move cards to another chapter |
@@ -150,7 +152,7 @@ markji_cards_move({ cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
 | `markji_cards_get` | `cards` (1-50, deduplicated) `include_text?` | `{ok, requested, found, missing, cards, cache}`; each `cards` item is `{card_id, ok, card\|error}` |
 | `markji_card_syntax` | `action?: validate/help`; validate: `content` or `contents` or `cards`; help: `format?` | single validate: `{ok, errors, warnings, stats, media}`; batch: `{ok, action, mode, source, total, valid, invalid, missing?, syntax_invalid?, results}`; help: `{ok, action, format, rules, nesting, formats}` |
 | `markji_card_create` | `deck` `chapter` `content` `order?` `grammar_version?` | `{ok, card_id, deck_id, chapter_id, status, changed, pending, message}` |
-| `markji_cards_create` | `deck` `chapter` `cards` (1-50, each `{content, order?, grammar_version?}`) | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}` |
+| `markji_cards_create` | `deck?` `chapter?` `cards` (1-50; each `{content, deck?, chapter?, order?, grammar_version?}`; top-level `deck` / `chapter` are defaults, item values override) | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`; the top-level `deck_id` / `chapter_id` are the defaults and are `null` when omitted |
 | `markji_card_update` | `card` `content` `grammar_version?`, or `updates` (1-50, each `{card, content, grammar_version?}`) | single: `{ok, card_id, status, changed, pending, message}`; batch: `{ok, action, mode, total, updated, unchanged, failed, partial, results}` |
 | `markji_card_archive` | `cards` (non-empty array) | `{ok, archived, content_updated, already_archived, moved, chapters, status, pending, message}` |
 | `markji_cards_move` | `cards` `to_chapter` `deck?` `order?` | `{ok, moved, to_chapter_id, status, pending, message}` |
@@ -379,20 +381,20 @@ Common issues:
 
 | Environment | Result |
 | --- | --- |
-| Windows + Node 25.2.1 | Real-account testing: sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, crash resume; unit 96/96, E2E 13/13, smoke 19 tools. |
-| WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Repository copied to the Linux filesystem (`/tmp`): unit 96/96, E2E 13/13, entry smoke 19 tools. |
+| Windows + Node 25.2.1 | Real-account testing: sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, crash resume; unit 97/97, E2E 13/13, smoke 19 tools. |
+| WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Run inside WSL2: unit 97/97, E2E 13/13, entry smoke 19 tools. |
 | macOS | Not tested on real hardware; the code uses only Node built-in modules and should work. |
 
 The WSL verification ran the repository's tests and entry smoke check directly in Linux; it did not install a second DSH inside WSL. To actually use the plugin under WSL, DSH itself should also run in that distribution.
 
-The syntax validator and media preflight added in 1.4.1, the syntax help added in 1.4.2, and the batch reads / writes added in 1.5.0 are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Batch operations run against the local cache and queue and need no new provider endpoint. The real-account checks in the table above were performed before these changes; no live token was available for a fresh real-account media query.
+The syntax validator and media preflight added in 1.4.1, the syntax help added in 1.4.2, the batch reads / writes added in 1.5.0, and the cross-chapter / cross-deck batch create added in 1.6.0 are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Batch operations run against the local cache and queue and need no new provider endpoint. The real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
 
 ## Development and testing
 
 Node >= 22.13 is required. Run from the repository source:
 
 ```bash
-node --test "test/*.test.js"   # unit / integration tests (96)
+node --test "test/*.test.js"   # unit / integration tests (97)
 node test/e2e-mock.mjs         # mock-server end-to-end (13)
 node test/index-smoke.mjs      # entry smoke test (19 tools)
 ```

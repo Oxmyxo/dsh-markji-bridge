@@ -199,3 +199,56 @@ test('markji_cards_create queues several local cards and isolates a bad item', a
     assert.equal(first.card.chapter_id, chapter.id);
   });
 });
+
+test('markji_cards_create can target different chapters and decks per item', async () => {
+  await withFixture(async ({ call, engine, mock, deck, chapter }) => {
+    const extraChapter = mock.newChapter(deck.id, '第二章节');
+    const otherDeck = mock.newDeck('另一卡组', { chapters: ['另一章节'] });
+    const otherChapter = mock.state.chapters.find((entry) => entry.deck_id === otherDeck.id);
+    await engine.sync({ mode: 'pull', full: true });
+
+    const mixed = await call('markji_cards_create', {
+      deck: deck.id,
+      chapter: chapter.id,
+      cards: [
+        { content: '默认目标' },
+        { content: '同卡组另一章节', chapter: extraChapter.id },
+        { content: '跨卡组', deck: otherDeck.id, chapter: otherChapter.id },
+      ],
+    });
+    assert.equal(mixed.created, 3);
+    assert.equal(mixed.deck_id, deck.id);
+    assert.equal(mixed.chapter_id, chapter.id);
+    assert.equal(mixed.results[0].chapter_id, chapter.id);
+    assert.equal(mixed.results[1].chapter_id, extraChapter.id);
+    assert.equal(mixed.results[2].deck_id, otherDeck.id);
+
+    const result = await call('markji_cards_create', {
+      cards: [
+        { content: '默认目标', deck: deck.id, chapter: chapter.id },
+        { content: '同卡组另一章节', deck: deck.id, chapter: extraChapter.id },
+        { content: '跨卡组', deck: otherDeck.id, chapter: otherChapter.id },
+        { content: '缺少目标' },
+      ],
+    });
+    assert.equal(result.total, 4);
+    assert.equal(result.created, 3);
+    assert.equal(result.failed, 1);
+    assert.equal(result.partial, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.deck_id, null);
+    assert.equal(result.chapter_id, null);
+    assert.equal(result.results[0].deck_id, deck.id);
+    assert.equal(result.results[0].chapter_id, chapter.id);
+    assert.equal(result.results[1].chapter_id, extraChapter.id);
+    assert.equal(result.results[2].deck_id, otherDeck.id);
+    assert.equal(result.results[2].chapter_id, otherChapter.id);
+    assert.equal(result.results[3].ok, false);
+    assert.match(result.results[3].error.message, /needs deck and chapter/);
+
+    const crossDeck = await engine.getCard({ card: result.results[2].card_id });
+    assert.equal(crossDeck.card.deck_id, otherDeck.id);
+    assert.equal(crossDeck.card.chapter_id, otherChapter.id);
+    assert.equal(crossDeck.card.content, '跨卡组');
+  });
+});

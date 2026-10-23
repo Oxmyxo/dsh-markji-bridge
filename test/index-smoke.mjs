@@ -31,7 +31,7 @@ for (const name of expected) if (!registered.has(name)) throw new Error('missing
 const statusDef = registered.get('markji_status');
 const status = await statusDef.execute({});
 if (!status || !status.cache || typeof status.cache.cards !== 'number') throw new Error('status tool output: ' + JSON.stringify(status));
-if (status.version !== '1.5.0') throw new Error('status version: ' + status.version);
+if (status.version !== '1.6.0') throw new Error('status version: ' + status.version);
 const syntaxDef = registered.get('markji_card_syntax');
 const validSyntax = await syntaxDef.execute({ content: String.raw`正文 \[字面括号\]` });
 if (!validSyntax || validSyntax.ok !== true) throw new Error('syntax tool rejected valid content: ' + JSON.stringify(validSyntax));
@@ -53,6 +53,11 @@ const batchGet = registered.get('markji_cards_get');
 if (!batchGet || !batchGet.parameters.properties.cards) throw new Error('markji_cards_get schema');
 const batchCreate = registered.get('markji_cards_create');
 if (!batchCreate || !batchCreate.parameters.properties.cards) throw new Error('markji_cards_create schema');
+if (JSON.stringify(batchCreate.parameters.required) !== JSON.stringify(['cards'])) {
+  throw new Error('markji_cards_create top-level deck/chapter must be optional: ' + JSON.stringify(batchCreate.parameters.required));
+}
+const createItem = batchCreate.parameters.properties.cards.items.properties;
+if (!createItem.deck || !createItem.chapter) throw new Error('markji_cards_create item target schema');
 const updateDef = registered.get('markji_card_update');
 if (!updateDef || !updateDef.parameters.properties.updates) throw new Error('markji_card_update batch schema');
 if (!status.cache || typeof status.cache.bytes !== 'number') throw new Error('status cache: ' + JSON.stringify(status.cache));
