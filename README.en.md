@@ -6,16 +6,16 @@
 
 A Markji (maimemo) flashcard plugin for DeepSeek Harness (DSH) agents. It maintains a local cache of decks, chapters, and cards, so an agent can search, read, create, update, and archive cards. Every edit is written to a local queue first, then synced to the cloud in a pull → three-way merge → push order. Conflicts are reported separately and never block the rest of the cards.
 
-19 `markji_*` tools, implemented with Node.js built-in modules only, with no third-party dependencies. Use `markji_card_syntax action=help` to look up the raw Markji syntax, then `action=validate` to validate content before writing. For batch work use `markji_cards_get`, `markji_cards_create` (cards may target different chapters or decks), the `updates` array of `markji_card_update`, and the `contents` / `cards` arrays of `markji_card_syntax`. Sync additionally checks that image / audio file ids referenced by the content exist in Markji.
+Four action-based `markji_*` tools, implemented with Node.js built-in modules only, with no third-party dependencies: `markji_decks` (decks and chapters, including chapter detail, create, rename, and sort), `markji_cards` (reads, writes, search, syntax, archive, and move), `markji_sync` (sync, progress, state, failures, and conflicts), and `markji_file` (files). Use `markji_cards({ action: "syntax_help" })` to look up raw Markji syntax, then `action=validate` before writing; batch work uses the same tool's `new_cards`, `updates`, and `contents` / `cards`. Sync additionally checks that image / audio file ids referenced by the content exist in Markji.
 
 ## Features
 
 - **Local cache**: one SQLite file, `cache.db`, stores indexes, card bodies, the pending queue, conflicts, and sync tasks. Routine searches and reads do not call the API.
 - **Plain-text search**: each card also stores a plain-text column with formatting markers, image/audio markers, data URIs, and base64 removed. Search matches the plain text only, so results stay clean and readable.
 - **Safe writes**: edits are queued; before pushing, remote changes are pulled and three-way merged, so stale data never overwrites the cloud. Conflicts are deduplicated per card and can be resolved individually.
-- **Syntax help, batch operations, write preflight, and media check**: `markji_card_syntax action=help` returns the raw Markji syntax for one format or all formats; `action=validate` accepts one `content`, several `contents`, or several `cards` and only validates content, never generating or rewriting it. `markji_cards_get` reads several cards at once, `markji_cards_create` can create cards across chapters or decks in one call, and the `updates` array of `markji_card_update` queues several writes. Before pushing, `markji_sync` validates each pending body again and batch-queries the `Pic` / `Audio` file ids. Syntax errors, missing files, and query failures are recorded on the card while the queue is kept, so nothing is half-written.
+- **Syntax help, batch operations, write preflight, and media check**: `markji_cards action=syntax_help` returns the raw Markji syntax for one format or all formats; `action=validate` accepts one `content`, several `contents`, or several `cards` and only validates content, never generating or rewriting it. `action=get` reads several cards at once, `action=create` accepts `new_cards` that may target different chapters or decks in one call, and `action=update` accepts an `updates` array that queues several writes. Before pushing, `markji_sync` validates each pending body again and batch-queries the `Pic` / `Audio` file ids. Syntax errors, missing files, and query failures are recorded on the card while the queue is kept, so nothing is half-written.
 - **Background sync**: a sync task returns a handle immediately and exposes progress. After a crash or plugin restart, resume with the same handle without creating duplicate cloud objects.
-- **Archive**: move cards into the same deck's "Archive" chapter and insert an archive note into the body. Repeated calls are idempotent.
+- **Archive and chapter operations**: `markji_cards({ action: "archive" })` moves cards into the same deck's "Archive" chapter and inserts an archive note into the body; repeated calls are idempotent. `markji_decks` supports chapter detail, create, rename, and sort (the provider has no chapter-delete endpoint).
 - **Multi-process safety**: multiple DSH processes on one machine can share a cache directory; writes are serialized with a file lock.
 
 ## Requirements
@@ -73,112 +73,146 @@ Never commit the token or write it into a config file. The plugin's `apiKey` con
 ## Quick start
 
 ```text
-markji_decks({ refresh: true })
-markji_search({ query: "sorting", deck: "Algorithms" })
-markji_card_get({ card: "<card_id>" })
-markji_cards_get({ cards: ["<card_id_1>", "<card_id_2>"] })
-markji_card_syntax({ action: "help" })
-markji_card_syntax({ action: "help", format: "picture" })
-markji_card_syntax({ content: "<Markji rich text>" })
-markji_card_syntax({ cards: ["<card_id_1>", "<card_id_2>"] })
-markji_card_syntax({ contents: ["<Markji rich text 1>", "<Markji rich text 2>"] })
-markji_sync({ mode: "auto" })
+markji_decks({ action: "list", refresh: true })
+markji_decks({ action: "get", deck: "<deck_id>" })
+markji_decks({ action: "chapter_get", chapter: "<chapter_id>", with_cards: true })
+markji_cards({ action: "search", query: "sorting", deck_name: "Algorithms" })
+markji_cards({ action: "get", card: "<card_id>" })
+markji_cards({ action: "get", cards: ["<card_id_1>", "<card_id_2>"] })
+markji_cards({ action: "syntax_help" })
+markji_cards({ action: "syntax_help", format: "picture" })
+markji_cards({ action: "validate", content: "<Markji rich text>" })
+markji_cards({ action: "validate", cards: ["<card_id_1>", "<card_id_2>"] })
+markji_cards({ action: "validate", contents: ["<Markji rich text 1>", "<Markji rich text 2>"] })
+markji_sync({ action: "start", mode: "auto" })
 ```
 
-The first call pulls cloud data (it can take a while for large accounts); later reads use the local cache. Use `markji_status` / `markji_sync_status` to inspect state and progress.
+The first call pulls cloud data (it can take a while for large accounts); later reads use the local cache. Use `markji_sync({ action: "state" })` / `markji_sync({ action: "progress" })` to inspect state and progress.
 
 ## Batch operations
 
-Use these entries when several cards are involved:
+Use these `markji_cards` actions when several cards are involved:
 
 ```text
-markji_cards_get({ cards: ["<id1>", "<id2>"] })
-markji_card_syntax({ cards: ["<id1>", "<id2>"] })              // validate existing cards
-markji_card_syntax({ contents: ["<body1>", "<body2>"] })        // validate bodies not written yet
-markji_cards_create({ cards: [
-  { content: "<body1>", deck: "<deck1>", chapter: "<chapter1>" },
+markji_cards({ action: "get", cards: ["<id1>", "<id2>"] })
+markji_cards({ action: "validate", cards: ["<id1>", "<id2>"] })              // validate existing cards
+markji_cards({ action: "validate", contents: ["<body1>", "<body2>"] })        // validate bodies not written yet
+markji_cards({ action: "create", deck: "<deck>", chapter: "<chapter>", new_cards: [
+  { content: "<body1>" },
   { content: "<body2>", deck: "<deck2>", chapter: "<chapter2>" },
 ] })
-markji_card_update({ updates: [
+markji_cards({ action: "update", updates: [
   { card: "<id1>", content: "<new body1>" },
   { card: "<id2>", content: "<new body2>" },
 ] })
-markji_card_archive({ cards: ["<id1>", "<id2>"] })              // archive was already batch
-markji_cards_move({ cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
+markji_cards({ action: "archive", cards: ["<id1>", "<id2>"] })
+markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
 ```
 
-- The new batch entries (multi-card reads, syntax `contents` / `cards`, batch create, `updates`) accept at most 50 items. Archive and move keep their existing non-empty-array behavior. `markji_cards_get` collapses duplicate ids; unknown ids are returned as per-item errors and do not abort the batch.
-- The top-level `deck` / `chapter` of `markji_cards_create` are optional defaults; each item may set its own `deck` / `chapter`, so one call can span chapters or decks. An item with no target is reported as a per-item error; each item's `order` is relative to its final target chapter.
-- Results list `ok` and errors per item. Writes are not a transaction: bad items are reported while the other items are still queued, and successful items still need `markji_sync`.
-- `markji_cards_get` omits the redundant `text` view by default; pass `include_text: true` when needed.
+- Batch actions accept at most 50 items (multi-card reads, syntax `contents` / `cards`, `new_cards`, `updates`); archive and move use a non-empty array. `action=get` collapses duplicate ids; unknown ids are returned as per-item errors and do not abort the batch.
+- The top-level `deck` / `chapter` of `action=create` are optional defaults; each `new_cards` item may set its own `deck` / `chapter`, so one call can span chapters or decks. An item with no target is reported as a per-item error; each item's `order` is relative to its final target chapter.
+- Results list `ok` and errors per item. Writes are not a transaction: bad items are reported while the other items are still queued, and successful items still need `markji_sync({ action: "start" })`.
+- `action=get` omits the redundant `text` view by default; pass `include_text: true` when needed.
 - Batch syntax validation is local only and does not query media availability; `markji_sync` still performs the media preflight.
 - Batch output can exceed `maxOutputChars`; split large operations into smaller batches.
 
 ## Tools
 
-| Tool | Purpose |
+Only four tools are registered; `action` selects the operation, and omitting it uses the tool's default.
+
+| Tool | Default action | Purpose |
+| --- | --- | --- |
+| `markji_decks` | `list` | Decks (list / detail) and chapters (list / detail / create / rename / sort) |
+| `markji_cards` | `list` | Card list, search, read, create, update, move, archive, syntax help and validation |
+| `markji_sync` | `start` | Start sync, inspect progress / plugin state / failures, resolve conflicts |
+| `markji_file` | none (required) | Upload a file to Markji or query file metadata |
+
+### Actions
+
+| Tool | Action | Purpose |
+| --- | --- | --- |
+| `markji_decks` | `list` | List folders and decks |
+| `markji_decks` | `get` | Read one deck and its chapters |
+| `markji_decks` | `chapter_list` | List chapters for one deck or for every cached deck |
+| `markji_decks` | `chapter_get` | Read one chapter, optionally with card summaries |
+| `markji_decks` | `chapter_create` / `chapter_rename` / `chapter_sort` | Create / rename / sort chapters |
+| `markji_cards` | `list` / `search` | Paginate and filter, or search by deck name, chapter name, and update time |
+| `markji_cards` | `get` | Read one or several cards by id; unknown ids are reported per item |
+| `markji_cards` | `create` | Batch-create from `new_cards`, including across chapters or decks |
+| `markji_cards` | `update` | Update one card (`card` + `content`) or several (`updates`) |
+| `markji_cards` | `move` / `archive` | Move to another chapter / archive into the "Archive" chapter |
+| `markji_cards` | `validate` / `syntax_help` | Validate raw or cached content / look up raw Markji syntax |
+| `markji_sync` | `start` | Start background sync (pull / push / auto; resumable) |
+| `markji_sync` | `progress` | View sync task progress and history |
+| `markji_sync` | `state` | Plugin and cache overview |
+| `markji_sync` | `failures` | View failed cards, conflicts, and recovery advice |
+| `markji_sync` | `resolve` | Resolve a conflict (keep_local / keep_remote / use_content) |
+| `markji_file` | `upload` / `query` | Upload a file / query file metadata |
+
+### Migrating from 1.x
+
+2.0.0 no longer registers the fine-grained 1.x tools; replace the old call with one tool plus an `action`. Fields are unchanged except that batch creation now uses `new_cards`:
+
+| 1.x tool | 2.0.0 call |
 | --- | --- |
-| `markji_decks` | List decks and folders |
-| `markji_chapters` | List the chapters of a deck |
-| `markji_cards` | Paginate / search cached cards |
-| `markji_search` | Find cards by deck name, chapter name, plain text, and update time |
-| `markji_card_get` | Read one card: `content` (rich text) + `text` (plain text) |
-| `markji_cards_get` | Read several cards by id; unknown ids are reported per item |
-| `markji_card_syntax` | Look up syntax help, or validate raw Markji syntax one at a time or in batches |
-| `markji_card_create` | Create one card (raw `content` only) |
-| `markji_cards_create` | Create several cards, including across chapters or decks |
-| `markji_card_update` | Update one card, or several with `updates` |
-| `markji_card_archive` | Archive cards into the "Archive" chapter |
-| `markji_cards_move` | Move cards to another chapter |
-| `markji_chapters_edit` | Create / rename / sort chapters |
-| `markji_sync` | Start background sync (pull / push / auto; resumable) |
-| `markji_sync_status` | View sync task progress and history |
-| `markji_failures` | View failed cards, conflicts, and recovery advice |
-| `markji_status` | Plugin and cache overview |
-| `markji_conflict_resolve` | Resolve a conflict (keep_local / keep_remote / use_content) |
-| `markji_file` | Upload a file to Markji or query file metadata |
+| `markji_chapters` / `markji_chapters_edit` | `markji_decks` `chapter_list` / `chapter_get` / `chapter_create` / `chapter_rename` / `chapter_sort` |
+| `markji_search` | `markji_cards` `search` |
+| `markji_card_get` / `markji_cards_get` | `markji_cards` `get` |
+| `markji_card_syntax` | `markji_cards` `validate` or `syntax_help` |
+| `markji_card_create` / `markji_cards_create` | `markji_cards` `create` (batch field: `new_cards`) |
+| `markji_card_update` | `markji_cards` `update` |
+| `markji_card_archive` / `markji_cards_move` | `markji_cards` `archive` / `move` |
+| `markji_sync_status` | `markji_sync` `progress` |
+| `markji_status` | `markji_sync` `state` |
+| `markji_failures` | `markji_sync` `failures` |
+| `markji_conflict_resolve` | `markji_sync` `resolve` |
+| `markji_file` | unchanged (`action` still required) |
 
 ## Tool parameters and return values
 
-`?` marks an optional parameter. All ids are Markji OpenAPI ids; objects that have not been pushed yet use `local_*` ids. Tool results are JSON and are truncated when they exceed `maxOutputChars`.
+`?` marks an optional parameter. All ids are Markji OpenAPI ids; objects that have not been pushed yet use `local_*` ids. Tool results are JSON and are truncated when they exceed `maxOutputChars`. The parameter column lists the fields used by that action; fields for other actions of the same tool apply only there.
 
-| Tool | Parameters | Returns (main fields) |
+| Tool / action | Parameters | Returns (main fields) |
 | --- | --- | --- |
-| `markji_decks` | `refresh?` `folder_id?` | `{folders, decks, total, cache}` |
-| `markji_chapters` | `deck?` `refresh?` | With `deck`: `{deck_id, deck_name, chapters, cache}`; without: `{decks, cache}` |
-| `markji_cards` | `deck?` `chapter?` `query?` `limit?` `offset?` | `{total, offset, limit, has_more, cards, cache}` |
-| `markji_search` | `query?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, filters, cards, cache}` |
-| `markji_card_get` | `card` `deck?` | `{card}` |
-| `markji_cards_get` | `cards` (1-50, deduplicated) `include_text?` | `{ok, requested, found, missing, cards, cache}`; each `cards` item is `{card_id, ok, card\|error}` |
-| `markji_card_syntax` | `action?: validate/help`; validate: `content` or `contents` or `cards`; help: `format?` | single validate: `{ok, errors, warnings, stats, media}`; batch: `{ok, action, mode, source, total, valid, invalid, missing?, syntax_invalid?, results}`; help: `{ok, action, format, rules, nesting, formats}` |
-| `markji_card_create` | `deck` `chapter` `content` `order?` `grammar_version?` | `{ok, card_id, deck_id, chapter_id, status, changed, pending, message}` |
-| `markji_cards_create` | `deck?` `chapter?` `cards` (1-50; each `{content, deck?, chapter?, order?, grammar_version?}`; top-level `deck` / `chapter` are defaults, item values override) | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`; the top-level `deck_id` / `chapter_id` are the defaults and are `null` when omitted |
-| `markji_card_update` | `card` `content` `grammar_version?`, or `updates` (1-50, each `{card, content, grammar_version?}`) | single: `{ok, card_id, status, changed, pending, message}`; batch: `{ok, action, mode, total, updated, unchanged, failed, partial, results}` |
-| `markji_card_archive` | `cards` (non-empty array) | `{ok, archived, content_updated, already_archived, moved, chapters, status, pending, message}` |
-| `markji_cards_move` | `cards` `to_chapter` `deck?` `order?` | `{ok, moved, to_chapter_id, status, pending, message}` |
-| `markji_chapters_edit` | `action: create/rename/sort`; create: `deck` `name` `order?`; rename: `chapter` `name` `deck?`; sort: `deck` `chapter_ids` | `{ok, action, chapter_id?, deck_id?, chapters?, status, pending, message}` |
-| `markji_sync` | `mode?: auto/pull/push` `full?` `resume?` | `{task, already_running?}` |
-| `markji_sync_status` | `task_id?` | `{active, tasks}` |
-| `markji_failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, recovery, truncated}` |
-| `markji_status` | none | `{version, data_dir, cache_file, configured, base_url, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
-| `markji_conflict_resolve` | `id` `strategy: keep_local/keep_remote/use_content` `content?` | `{ok, id, entity, strategy, state, changed}` |
-| `markji_file` | `action: upload/query`; upload: `path` `deck?`; query: `ids` `expires?` | upload: `{file}`; query: `{files}` |
+| `markji_decks` / `list` | `refresh?` `folder_id?` | `{folders, decks, total, cache}` |
+| `markji_decks` / `get` | `deck` `refresh?` | `{deck, chapters, cache}` |
+| `markji_decks` / `chapter_list` | `deck?` `refresh?` | With `deck`: `{deck_id, deck_name, chapters, cache}`; without: `{decks, cache}` |
+| `markji_decks` / `chapter_get` | `chapter` `deck?` `with_cards?` `refresh?` | `{deck_id, deck_name, chapter, cards?, total?, cache}` |
+| `markji_decks` / `chapter_create` | `deck` `name` `order?` | `{ok, action, chapter_id, deck_id, status, pending, message}` |
+| `markji_decks` / `chapter_rename` | `chapter` `name` `deck?` | `{ok, action, chapter_id, status, pending, message}` |
+| `markji_decks` / `chapter_sort` | `deck` `chapter_ids` | `{ok, action, deck_id, chapters, status, pending, message}` |
+| `markji_cards` / `list` | `deck?` `chapter?` `query?` `limit?` `offset?` | `{total, offset, limit, has_more, cards, cache}` |
+| `markji_cards` / `search` | `query?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, filters, cards, cache}` |
+| `markji_cards` / `get` | `card?` `cards?` (1-50, deduplicated) `include_text?` | `{ok, requested, found, missing, cards, cache}`; each `cards` item is `{card_id, ok, card\|error}` |
+| `markji_cards` / `create` | `new_cards` (1-50; each `{content, deck?, chapter?, order?, grammar_version?}`); top-level `deck?` `chapter?` are defaults | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`; top-level defaults are `null` when omitted |
+| `markji_cards` / `update` | `card` `content` `grammar_version?`, or `updates` (1-50, each `{card, content, grammar_version?}`) | single: `{ok, card_id, status, changed, pending, message}`; batch: `{ok, action, mode, total, updated, unchanged, failed, partial, results}` |
+| `markji_cards` / `move` | `cards` `to_chapter` `deck?` `order?` | `{ok, moved, to_chapter_id, status, pending, message}` |
+| `markji_cards` / `archive` | `cards` (non-empty array) | `{ok, archived, content_updated, already_archived, moved, chapters, status, pending, message}` |
+| `markji_cards` / `validate` | `content` or `contents` or `cards` (only one) | single: `{ok, errors, warnings, stats, media}`; batch: `{ok, action, mode, source, total, valid, invalid, missing?, syntax_invalid?, results}` |
+| `markji_cards` / `syntax_help` | `format?` | `{ok, action, format, rules, nesting, formats}` |
+| `markji_sync` / `start` | `mode?: auto/pull/push` `full?` `resume?` | `{task, already_running?}` |
+| `markji_sync` / `progress` | `task_id?` | `{active, tasks}` |
+| `markji_sync` / `state` | none | `{version, data_dir, cache_file, configured, base_url, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
+| `markji_sync` / `failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, recovery, truncated}` |
+| `markji_sync` / `resolve` | `id` `strategy: keep_local/keep_remote/use_content` `content?` | `{ok, id, entity, strategy, state, changed}` |
+| `markji_file` / `upload` | `path` `deck?` | `{file}` |
+| `markji_file` / `query` | `ids` `expires?` | `{files}` |
 
 ### Syntax help
 
-`markji_card_syntax` has two modes:
+Use the `validate` / `syntax_help` actions of `markji_cards`:
 
 ```text
-markji_card_syntax({ action: "help" })                     // every format
-markji_card_syntax({ action: "help", format: "picture" })  // just pictures
-markji_card_syntax({ content: "<Markji rich text>" })      // validate content
-markji_card_syntax({ contents: ["<body1>", "<body2>"] })    // validate several bodies
-markji_card_syntax({ cards: ["<id1>", "<id2>"] })           // validate several existing cards
+markji_cards({ action: "syntax_help" })                     // every format
+markji_cards({ action: "syntax_help", format: "picture" })  // just pictures
+markji_cards({ action: "validate", content: "<Markji rich text>" })      // validate content
+markji_cards({ action: "validate", contents: ["<body1>", "<body2>"] })    // validate several bodies
+markji_cards({ action: "validate", cards: ["<id1>", "<id2>"] })           // validate several existing cards
 ```
 
 In batch mode pass only one of `content`, `contents`, or `cards`. Each item is validated independently, so one bad item does not stop the others. `cards` validates the effective body (the pending edit when one exists).
 
-For `action=help`, omit `format` or pass `all`; pass `basic` for just the general rules and nesting matrix. Supported format ids are `text-style`, `cloze`, `audio`, `card-ref`, `paragraph`, `choice`, `picture`, `formula`, and `answer-line`; the corresponding tag (for example `Pic`) and Chinese aliases (for example `图片`) are also accepted. Help is static and never inspects or rewrites content; the syntax follows the [Markji syntax guide](https://tutuji333.github.io/markji-faq/questions/content/card-syntax-guide/).
+For `action=syntax_help`, omit `format` or pass `all`; pass `basic` for just the general rules and nesting matrix. Supported format ids are `text-style`, `cloze`, `audio`, `card-ref`, `paragraph`, `choice`, `picture`, `formula`, and `answer-line`; the corresponding tag (for example `Pic`) and Chinese aliases (for example `图片`) are also accepted. Help is static and never inspects or rewrites content; the syntax follows the [Markji syntax guide](https://tutuji333.github.io/markji-faq/questions/content/card-syntax-guide/).
 
 ### Return structures
 
@@ -284,7 +318,7 @@ Failures = {
 }
 ```
 
-For `markji_card_archive`, `chapters` is `[{ deck_id, chapter_id, chapter_name, local }]`. For `markji_file`, `file` is returned by Markji; common fields are `id`, `url`, `mime`, `size`, `info`, and `expire_time`.
+For `markji_cards({ action: "archive" })`, `chapters` is `[{ deck_id, chapter_id, chapter_name, local }]`. For `markji_file`, `file` is returned by Markji; common fields are `id`, `url`, `mime`, `size`, `info`, and `expire_time`.
 
 ## Configuration
 
@@ -312,21 +346,21 @@ The defaults live in the bundle's `cordis.patch.yml`; all are optional:
 
 - Reads first do an incremental pull when the cache has expired; writes only update the local cache and enqueue changes.
 - `markji_sync mode=auto`: pull and three-way merge first, then push the local queue. A pull always happens before a push, so stale data never overwrites remote changes.
-- Before pushing a card, the engine validates each pending body and batch-calls `POST /api/v1/markji/files/query` for the ids in `Pic#ID/...`, `Pic#ID/...,MID/...`, and `Audio#...,ID/...`. Missing files are not written; the card stays queued and `markji_failures` reports the recovery steps.
+- Before pushing a card, the engine validates each pending body and batch-calls `POST /api/v1/markji/files/query` for the ids in `Pic#ID/...`, `Pic#ID/...,MID/...`, and `Audio#...,ID/...`. Missing files are not written; the card stays queued and `markji_sync({ action: "failures" })` reports the recovery steps.
 - Conflicts do not block other cards. Resolve them with `keep_local` (keep the local edit and overwrite the cloud on the next push), `keep_remote` (accept the cloud version and discard the local edit), or `use_content` (replace the local pending content with the supplied content).
 - Sync tasks record progress and results, keeping the latest 20. If the process is interrupted, the task is marked `interrupted`; resume it with `markji_sync resume=<task_id>`.
-- Inspect failures or conflicts with `markji_failures`, then run `markji_sync mode=push`.
+- Inspect failures or conflicts with `markji_sync({ action: "failures" })`, then run `markji_sync({ action: "start", mode: "push" })`.
 
 ## Performance and behavior
 
 - Reads prefer the local cache. When the cache is older than `pullTtlMs` (default 10 minutes) or `refresh: true` is passed, an incremental pull runs first.
 - Since 1.0.1, the fallback refresh for an unknown id pulls only decks marked as changed in the cloud, instead of pulling every deck. On a measured account with 5,265 cards / 82 chapters, renaming an unknown chapter returned `unknown_chapter` in about 0.8 seconds and an unknown card in about 0.3 seconds; the old full pull took about 12.5 seconds.
-- When a full refresh is actually needed, run `markji_sync({ mode: "pull", full: true })` explicitly. It is a background task: it returns a `task` first, then use `markji_sync_status` to track progress.
+- When a full refresh is actually needed, run `markji_sync({ action: "start", mode: "pull", full: true })` explicitly. It is a background task: it returns a `task` first, then use `markji_sync({ action: "progress" })` to track progress.
 - Writes only update the local cache and return immediately; network requests happen in sync tasks or auto sync.
 - Auto sync runs after `idleQuietMs` (default 2 minutes) of quiet following the most recent tool call. When nothing is pending, it pulls every `autoPullMs` (default 15 minutes). After a failure it retries every `retryBackoffMs` (default 5 minutes).
 - Open conflicts pause auto push, but pulls continue.
 - Requests use a sliding-window rate limit (default 18 per 10 seconds, 36 per minute, 7,800 per 5 hours); concurrent syncs queue automatically.
-- Card content is limited to 100,000 characters; `markji_cards` accepts `limit` up to 200, `markji_search` up to 100, and the new batch entries accept at most 50 items each (archive / move are not capped).
+- Card content is limited to 100,000 characters; `markji_cards` `list` accepts `limit` up to 200, `search` up to 100, and the new batch entries accept at most 50 items each (archive / move are not capped).
 
 ## Error codes and troubleshooting
 
@@ -335,15 +369,15 @@ Tool errors usually look like `markji: <code>: <message> (hint: ...)`; malformed
 | Code | Meaning and action |
 | --- | --- |
 | `not_configured` | No token is available. Set `MAIMEMO_MARKJI_OPENAPI_TOKEN`, fully quit DSH, and restart so the host process sees the new environment variable. |
-| `unknown_deck` / `unknown_chapter` / `unknown_card` / `unknown_folder` | The id is not in the local cache. The fallback refresh already ran; if the object was created on another device, run `markji_sync({ mode: "pull", full: true })` and retry. |
+| `unknown_deck` / `unknown_chapter` / `unknown_card` / `unknown_folder` | The id is not in the local cache. The fallback refresh already ran; if the object was created on another device, run `markji_sync({ action: "start", mode: "pull", full: true })` and retry. |
 | `invalid_argument` | Missing or wrongly typed argument, bad time format, incomplete `chapter_ids`, empty content, content over 100,000 characters, etc. Fix the arguments according to the message. |
 | `invalid_content` | Invalid card content (for example, empty after normalization). |
-| `invalid_card_content` | The card body failed raw Markji syntax validation. Use `markji_card_syntax` to see line / column and error codes, fix the content, then push again. |
+| `invalid_card_content` | The card body failed raw Markji syntax validation. Use `markji_cards({ action: "validate" })` to see line / column and error codes, fix the content, then push again. |
 | `media_unavailable` | An image / mask / audio file id in the body cannot be found in Markji. Upload it with `markji_file`, then update the body with the returned `file.id`. |
 | `media_check_failed` | The pre-push media query failed (network, auth, etc.). The card stays queued; retry `markji_sync` after recovery. |
-| `conflict_open` | The card has an open conflict. Resolve it with `markji_conflict_resolve` first. |
-| `unknown_conflict` | The conflict id does not exist or was already resolved. Fetch the current list with `markji_failures`. |
-| `unknown_task` / `task_not_resumable` | The `resume` task id does not exist, or the task is not `interrupted` / has already finished. Check with `markji_sync_status`. |
+| `conflict_open` | The card has an open conflict. Resolve it with `markji_sync({ action: "resolve" })` first. |
+| `unknown_conflict` | The conflict id does not exist or was already resolved. Fetch the current list with `markji_sync({ action: "failures" })`. |
+| `unknown_task` / `task_not_resumable` | The `resume` task id does not exist, or the task is not `interrupted` / has already finished. Check with `markji_sync({ action: "progress" })`. |
 | `deck_mismatch` | The target chapter or card does not belong to the specified deck. Check that the ids match the `deck` argument. |
 | `cache_busy` | Another DSH process holds `cache.write.lock`. Wait for it to finish and retry; do not delete the lock of a live process manually. |
 | `engine_unavailable` | The plugin engine did not load completely. Disable and re-enable the plugin, or restart DSH. |
@@ -354,13 +388,13 @@ Tool errors usually look like `markji: <code>: <message> (hint: ...)`; malformed
 
 Common issues:
 
-- **`configured: false` in `markji_status`**: the DSH host process did not see the token. On Windows you must restart DSH after `setx`; on WSL / Linux, `export` it in the same shell that starts DSH, then restart DSH.
+- **`configured: false` in `markji_sync({ action: "state" })`**: the DSH host process did not see the token. On Windows you must restart DSH after `setx`; on WSL / Linux, `export` it in the same shell that starts DSH, then restart DSH.
 - **401 / 403**: the token is invalid, expired, or lacks OpenAPI permission; generate a new one on the platform. Do not put the token in `cordis.patch.yml` or commit it to the repository.
-- **The first call is slow**: the first call pulls all decks, chapters, and cards; thousands of cards usually take tens of seconds to a few minutes, which is expected. Watch the background task with `markji_sync_status` instead of starting duplicate syncs.
-- **A card just created on the phone or web is missing locally**: the fallback refresh pulls only changed decks. If the deck's `updated_time` did not change, run `markji_sync({ mode: "pull", full: true })`.
-- **Auto sync is not pushing**: first check `markji_failures` for open conflicts; auto push pauses while any are open. After resolving them, run `markji_sync({ mode: "push" })`.
+- **The first call is slow**: the first call pulls all decks, chapters, and cards; thousands of cards usually take tens of seconds to a few minutes, which is expected. Watch the background task with `markji_sync({ action: "progress" })` instead of starting duplicate syncs.
+- **A card just created on the phone or web is missing locally**: the fallback refresh pulls only changed decks. If the deck's `updated_time` did not change, run `markji_sync({ action: "start", mode: "pull", full: true })`.
+- **Auto sync is not pushing**: first check `markji_sync({ action: "failures" })` for open conflicts; auto push pauses while any are open. After resolving them, run `markji_sync({ action: "start", mode: "push" })`.
 - **`cache_busy` keeps appearing**: check whether another DSH process is using the same `dataDir`; close the extra process. Locks left by a crashed process are reclaimed after checking the owner pid / hostname.
-- **The cache is corrupted**: the plugin renames the old database to a backup, rebuilds it, and pulls again. Check the DSH logs and `markji_status.last_error`.
+- **The cache is corrupted**: the plugin renames the old database to a backup, rebuilds it, and pulls again. Check the DSH logs and `markji_sync({ action: "state" }).last_error`.
 - **Using it under WSL**: DSH itself must run inside that WSL distribution's Linux environment; export the token in the shell that starts DSH. Keep the SQLite cache on the Linux filesystem (for example `~/.dsh/...`), not under `/mnt/c`, to avoid file-lock and performance problems.
 
 ## Data and privacy
@@ -372,7 +406,7 @@ Common issues:
 
 ## Known limitations
 
-- The Markji OpenAPI cannot create or delete decks, or delete cards; those operations still need the web app or client.
+- The Markji OpenAPI cannot create or delete decks, delete cards, or delete chapters. Chapters support create / rename / sort only; the delete operations still need the web app or client.
 - Only one Markji account is supported.
 - Conflicts must be resolved manually; auto push pauses while any are open.
 - `grammarVersion` is a global default, used when a card's own version is unknown.
@@ -381,22 +415,22 @@ Common issues:
 
 | Environment | Result |
 | --- | --- |
-| Windows + Node 25.2.1 | Real-account testing: sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, crash resume; unit 97/97, E2E 13/13, smoke 19 tools. |
-| WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Run inside WSL2: unit 97/97, E2E 13/13, entry smoke 19 tools. |
+| Windows + Node 25.2.1 | 2.0.0: unit 98/98, E2E 13/13, entry smoke 4 tools. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x. |
+| WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Last verified on 1.6.0: unit 97/97, E2E 13/13, entry smoke 19 tools; 2.0.0 has not been re-run in WSL. |
 | macOS | Not tested on real hardware; the code uses only Node built-in modules and should work. |
 
 The WSL verification ran the repository's tests and entry smoke check directly in Linux; it did not install a second DSH inside WSL. To actually use the plugin under WSL, DSH itself should also run in that distribution.
 
-The syntax validator and media preflight added in 1.4.1, the syntax help added in 1.4.2, the batch reads / writes added in 1.5.0, and the cross-chapter / cross-deck batch create added in 1.6.0 are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Batch operations run against the local cache and queue and need no new provider endpoint. The real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
+2.0.0 consolidates the 19 fine-grained tools into four action-based tools and adds deck detail, chapter detail, and `with_cards`; chapter create / rename / sort reuse the existing engine. These paths are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
 
 ## Development and testing
 
 Node >= 22.13 is required. Run from the repository source:
 
 ```bash
-node --test "test/*.test.js"   # unit / integration tests (97)
+node --test "test/*.test.js"   # unit / integration tests (98)
 node test/e2e-mock.mjs         # mock-server end-to-end (13)
-node test/index-smoke.mjs      # entry smoke test (19 tools)
+node test/index-smoke.mjs      # entry smoke test (4 tools)
 ```
 
 There is also an internal independent verification suite used for pre-release cross-checking; it is not published in the repository. The public repository contains only the tests listed above.

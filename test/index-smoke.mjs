@@ -25,41 +25,43 @@ if (typeof disposer !== 'function') throw new Error('apply did not return the ef
 if (inject.join(',') !== 'tools') throw new Error('inject mismatch');
 await new Promise((r) => setTimeout(r, 150));
 const names = [...registered.keys()];
-if (names.length !== 19) throw new Error('expected 19 tools, got ' + names.length + ': ' + names.join(','));
-const expected = ['markji_decks','markji_chapters','markji_cards','markji_search','markji_card_get','markji_cards_get','markji_card_syntax','markji_card_create','markji_cards_create','markji_card_update','markji_card_archive','markji_cards_move','markji_chapters_edit','markji_sync','markji_sync_status','markji_failures','markji_status','markji_conflict_resolve','markji_file'];
+if (names.length !== 4) throw new Error('expected 4 tools, got ' + names.length + ': ' + names.join(','));
+const expected = ['markji_decks', 'markji_cards', 'markji_sync', 'markji_file'];
 for (const name of expected) if (!registered.has(name)) throw new Error('missing tool ' + name);
-const statusDef = registered.get('markji_status');
-const status = await statusDef.execute({});
-if (!status || !status.cache || typeof status.cache.cards !== 'number') throw new Error('status tool output: ' + JSON.stringify(status));
-if (status.version !== '1.6.0') throw new Error('status version: ' + status.version);
-const syntaxDef = registered.get('markji_card_syntax');
-const validSyntax = await syntaxDef.execute({ content: String.raw`正文 \[字面括号\]` });
-if (!validSyntax || validSyntax.ok !== true) throw new Error('syntax tool rejected valid content: ' + JSON.stringify(validSyntax));
-const badSyntax = await syntaxDef.execute({ content: '[X##bad]' });
-if (!badSyntax || badSyntax.ok !== false) throw new Error('syntax tool accepted invalid content: ' + JSON.stringify(badSyntax));
-const help = await syntaxDef.execute({ action: 'help' });
+const syncDef = registered.get('markji_sync');
+const status = await syncDef.execute({ action: 'state' });
+if (!status || !status.cache || typeof status.cache.cards !== 'number') throw new Error('state output: ' + JSON.stringify(status));
+if (status.version !== '2.0.0') throw new Error('status version: ' + status.version);
+const progress = await syncDef.execute({ action: 'progress' });
+if (!progress || !Array.isArray(progress.tasks)) throw new Error('progress output: ' + JSON.stringify(progress));
+const failures = await syncDef.execute({ action: 'failures' });
+if (!failures || !failures.summary) throw new Error('failures output: ' + JSON.stringify(failures));
+const cardsDef = registered.get('markji_cards');
+const validSyntax = await cardsDef.execute({ action: 'validate', content: String.raw`正文 \[字面括号\]` });
+if (!validSyntax || validSyntax.ok !== true) throw new Error('validate rejected valid content: ' + JSON.stringify(validSyntax));
+const badSyntax = await cardsDef.execute({ action: 'validate', content: '[X##bad]' });
+if (!badSyntax || badSyntax.ok !== false) throw new Error('validate accepted invalid content: ' + JSON.stringify(badSyntax));
+const help = await cardsDef.execute({ action: 'syntax_help' });
 if (!help || help.ok !== true || !Array.isArray(help.formats) || help.formats.length !== 9) {
   throw new Error('syntax help output: ' + JSON.stringify(help));
 }
-const pictureHelp = await syntaxDef.execute({ action: 'help', format: 'picture' });
+const pictureHelp = await cardsDef.execute({ action: 'syntax_help', format: 'picture' });
 if (!pictureHelp || pictureHelp.ok !== true || pictureHelp.tag !== 'Pic') {
   throw new Error('syntax help format lookup: ' + JSON.stringify(pictureHelp));
 }
-const batchSyntax = await syntaxDef.execute({ contents: ['正文', '[X##bad]'] });
+const batchSyntax = await cardsDef.execute({ action: 'validate', contents: ['正文', '[X##bad]'] });
 if (!batchSyntax || batchSyntax.mode !== 'batch' || batchSyntax.total !== 2 || batchSyntax.valid !== 1 || batchSyntax.invalid !== 1) {
   throw new Error('syntax batch output: ' + JSON.stringify(batchSyntax));
 }
-const batchGet = registered.get('markji_cards_get');
-if (!batchGet || !batchGet.parameters.properties.cards) throw new Error('markji_cards_get schema');
-const batchCreate = registered.get('markji_cards_create');
-if (!batchCreate || !batchCreate.parameters.properties.cards) throw new Error('markji_cards_create schema');
-if (JSON.stringify(batchCreate.parameters.required) !== JSON.stringify(['cards'])) {
-  throw new Error('markji_cards_create top-level deck/chapter must be optional: ' + JSON.stringify(batchCreate.parameters.required));
+if (!cardsDef.parameters.properties.cards || !cardsDef.parameters.properties.new_cards || !cardsDef.parameters.properties.updates) {
+  throw new Error('markji_cards batch schema');
 }
-const createItem = batchCreate.parameters.properties.cards.items.properties;
-if (!createItem.deck || !createItem.chapter) throw new Error('markji_cards_create item target schema');
-const updateDef = registered.get('markji_card_update');
-if (!updateDef || !updateDef.parameters.properties.updates) throw new Error('markji_card_update batch schema');
+const createItem = cardsDef.parameters.properties.new_cards.items.properties;
+if (!createItem.deck || !createItem.chapter) throw new Error('markji_cards item target schema');
+const decksDef = registered.get('markji_decks');
+if (!decksDef.parameters.properties.action.enum.includes('chapter_get')) throw new Error('markji_decks chapter actions');
+if (!decksDef.parameters.properties.with_cards) throw new Error('markji_decks with_cards schema');
+if (!syncDef.parameters.properties.action.enum.includes('resolve')) throw new Error('markji_sync resolve action');
 if (!status.cache || typeof status.cache.bytes !== 'number') throw new Error('status cache: ' + JSON.stringify(status.cache));
 const handle = new DatabaseSync(join(dir, 'cache.db'), { readOnly: true });
 try {

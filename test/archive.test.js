@@ -131,9 +131,11 @@ test('failure report exposes conflicts with recovery and clears after resolution
     const conflict = report.conflicts[0];
     assert.equal(conflict.card_id, card.id);
     assert.equal(conflict.entity, 'card');
-    assert.equal(conflict.recovery.tool, 'markji_conflict_resolve');
+    assert.equal(conflict.recovery.tool, 'markji_sync');
+    assert.equal(conflict.recovery.action, 'resolve');
     assert.ok(conflict.recovery.strategies.includes('keep_local'));
     assert.equal(conflict.recovery.arguments.id, conflict.id);
+    assert.equal(conflict.recovery.arguments.action, 'resolve');
 
     const resolved = await engine.resolveConflict({ id: conflict.id, strategy: 'keep_local' });
     assert.equal(resolved.ok, true);
@@ -183,7 +185,9 @@ test('failure report persists a failed push and suggests a retry', async () => {
     assert.equal(failed.error.code, 'server_error');
     assert.equal(failed.error.op, 'card_update');
     assert.equal(failed.recovery.tool, 'markji_sync');
+    assert.equal(failed.recovery.action, 'start');
     assert.equal(failed.recovery.arguments.mode, 'push');
+    assert.equal(failed.recovery.arguments.action, 'start');
 
     failUpdates = false;
     const retry = await engine.sync({ mode: 'push' });

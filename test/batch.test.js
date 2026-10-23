@@ -93,9 +93,9 @@ async function withFixture(run) {
   }
 }
 
-test('markji_cards_get returns several cards in request order and isolates unknown ids', async () => {
+test('markji_cards action=get returns several cards in request order and isolates unknown ids', async () => {
   await withFixture(async ({ call, good, alsoGood }) => {
-    const result = await call('markji_cards_get', { cards: [alsoGood.id, good.id, 'missing_card_id'] });
+    const result = await call('markji_cards', { action: 'get', cards: [alsoGood.id, good.id, 'missing_card_id'] });
     assert.equal(result.requested, 3);
     assert.equal(result.found, 2);
     assert.deepEqual(result.missing, ['missing_card_id']);
@@ -108,14 +108,14 @@ test('markji_cards_get returns several cards in request order and isolates unkno
     assert.equal(result.cards[2].ok, false);
     assert.equal(result.cards[2].error.code, 'unknown_card');
 
-    const withText = await call('markji_cards_get', { cards: [good.id], include_text: true });
+    const withText = await call('markji_cards', { action: 'get', cards: [good.id], include_text: true });
     assert.match(withText.cards[0].card.text, /第一张正常卡片/);
   });
 });
 
-test('markji_card_syntax validates multiple raw bodies and multiple cached cards', async () => {
+test('markji_cards action=validate validates multiple raw bodies and multiple cached cards', async () => {
   await withFixture(async ({ call, good, alsoGood, bad }) => {
-    const raw = await call('markji_card_syntax', { contents: ['第一段 \\[字面括号\\]', '[X##bad]'] });
+    const raw = await call('markji_cards', { action: 'validate', contents: ['第一段 \\[字面括号\\]', '[X##bad]'] });
     assert.equal(raw.mode, 'batch');
     assert.equal(raw.source, 'contents');
     assert.equal(raw.total, 2);
@@ -125,7 +125,7 @@ test('markji_card_syntax validates multiple raw bodies and multiple cached cards
     assert.equal(raw.results[1].ok, false);
     assert.equal(raw.results[1].errors[0].code, 'unknown_tag');
 
-    const cards = await call('markji_card_syntax', { cards: [good.id, alsoGood.id, bad.id, 'missing_card_id'] });
+    const cards = await call('markji_cards', { action: 'validate', cards: [good.id, alsoGood.id, bad.id, 'missing_card_id'] });
     assert.equal(cards.mode, 'batch');
     assert.equal(cards.source, 'cards');
     assert.equal(cards.total, 4);
@@ -138,17 +138,17 @@ test('markji_card_syntax validates multiple raw bodies and multiple cached cards
     assert.equal(cards.results[2].errors[0].code, 'unknown_tag');
     assert.equal(cards.results[3].error.code, 'unknown_card');
 
-    await call('markji_card_update', { card: good.id, content: '排队中的新正文' });
-    const pending = await call('markji_card_syntax', { cards: [good.id] });
+    await call('markji_cards', { action: 'update', card: good.id, content: '排队中的新正文' });
+    const pending = await call('markji_cards', { action: 'validate', cards: [good.id] });
     assert.equal(pending.results[0].content_source, 'pending');
     assert.equal(pending.results[0].content_length, '排队中的新正文'.length);
     assert.equal(pending.valid, 1);
   });
 });
 
-test('markji_card_update batch queues good items and reports bad items without aborting', async () => {
+test('markji_cards action=update batch queues good items and reports bad items without aborting', async () => {
   await withFixture(async ({ call, engine, good, bad }) => {
-    const result = await call('markji_card_update', {
+    const result = await call('markji_cards', { action: 'update',
       updates: [
         { card: good.id, content: '批量修改后的第一张' },
         { card: bad.id, content: '' },
@@ -173,12 +173,12 @@ test('markji_card_update batch queues good items and reports bad items without a
   });
 });
 
-test('markji_cards_create queues several local cards and isolates a bad item', async () => {
+test('markji_cards action=create queues several local cards and isolates a bad item', async () => {
   await withFixture(async ({ call, engine, deck, chapter }) => {
-    const result = await call('markji_cards_create', {
+    const result = await call('markji_cards', { action: 'create',
       deck: deck.id,
       chapter: chapter.id,
-      cards: [
+      new_cards: [
         { content: '批量新建一' },
         { content: '批量新建二 [E##x+y]' },
         { content: '' },
@@ -200,17 +200,17 @@ test('markji_cards_create queues several local cards and isolates a bad item', a
   });
 });
 
-test('markji_cards_create can target different chapters and decks per item', async () => {
+test('markji_cards action=create can target different chapters and decks per item', async () => {
   await withFixture(async ({ call, engine, mock, deck, chapter }) => {
     const extraChapter = mock.newChapter(deck.id, '第二章节');
     const otherDeck = mock.newDeck('另一卡组', { chapters: ['另一章节'] });
     const otherChapter = mock.state.chapters.find((entry) => entry.deck_id === otherDeck.id);
     await engine.sync({ mode: 'pull', full: true });
 
-    const mixed = await call('markji_cards_create', {
+    const mixed = await call('markji_cards', { action: 'create',
       deck: deck.id,
       chapter: chapter.id,
-      cards: [
+      new_cards: [
         { content: '默认目标' },
         { content: '同卡组另一章节', chapter: extraChapter.id },
         { content: '跨卡组', deck: otherDeck.id, chapter: otherChapter.id },
@@ -223,8 +223,9 @@ test('markji_cards_create can target different chapters and decks per item', asy
     assert.equal(mixed.results[1].chapter_id, extraChapter.id);
     assert.equal(mixed.results[2].deck_id, otherDeck.id);
 
-    const result = await call('markji_cards_create', {
-      cards: [
+    const result = await call('markji_cards', {
+      action: 'create',
+      new_cards: [
         { content: '默认目标', deck: deck.id, chapter: chapter.id },
         { content: '同卡组另一章节', deck: deck.id, chapter: extraChapter.id },
         { content: '跨卡组', deck: otherDeck.id, chapter: otherChapter.id },
@@ -250,5 +251,46 @@ test('markji_cards_create can target different chapters and decks per item', asy
     assert.equal(crossDeck.card.deck_id, otherDeck.id);
     assert.equal(crossDeck.card.chapter_id, otherChapter.id);
     assert.equal(crossDeck.card.content, '跨卡组');
+  });
+});
+
+test('markji_decks returns deck detail and supports chapter create/get/rename/sort', async () => {
+  await withFixture(async ({ call, engine, deck }) => {
+    const detail = await call('markji_decks', { action: 'get', deck: deck.id });
+    assert.equal(detail.deck.id, deck.id);
+    assert.equal(detail.deck.name, '批量测试');
+    assert.ok(detail.chapters.length >= 1, 'deck detail includes chapters');
+    assert.equal(detail.deck.chapter_count, detail.chapters.length);
+
+    const created = await call('markji_decks', { action: 'chapter_create', deck: deck.id, name: '新章节' });
+    assert.equal(created.ok, true);
+    assert.match(created.chapter_id, /^local_/);
+
+    const got = await call('markji_decks', {
+      action: 'chapter_get',
+      chapter: created.chapter_id,
+      with_cards: true,
+    });
+    assert.equal(got.chapter.id, created.chapter_id);
+    assert.equal(got.chapter.name, '新章节');
+    assert.equal(got.deck_id, deck.id);
+    assert.deepEqual(got.cards, []);
+
+    const renamed = await call('markji_decks', {
+      action: 'chapter_rename',
+      chapter: created.chapter_id,
+      name: '重命名章节',
+    });
+    assert.equal(renamed.ok, true);
+    const afterRename = await call('markji_decks', { action: 'chapter_get', chapter: created.chapter_id });
+    assert.equal(afterRename.chapter.name, '重命名章节');
+
+    const listed = await call('markji_decks', { action: 'chapter_list', deck: deck.id });
+    assert.equal(listed.deck_id, deck.id);
+    const ids = listed.chapters.map((chapter) => chapter.id).reverse();
+    const sorted = await call('markji_decks', { action: 'chapter_sort', deck: deck.id, chapter_ids: ids });
+    assert.equal(sorted.ok, true);
+    const afterSort = await call('markji_decks', { action: 'get', deck: deck.id });
+    assert.deepEqual(afterSort.chapters.map((chapter) => chapter.id), ids);
   });
 });
