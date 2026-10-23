@@ -2,6 +2,8 @@
 
 # dsh-markji-bridge
 
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/oxmyxo/dsh-markji-bridge)
+
 A Markji (maimemo) flashcard plugin for DeepSeek Harness (DSH) agents. It maintains a local cache of decks, chapters, and cards, so an agent can search, read, create, update, and archive cards. Every edit is written to a local queue first, then synced to the cloud in a pull → three-way merge → push order. Conflicts are reported separately and never block the rest of the cards.
 
 17 `markji_*` tools, implemented with Node.js built-in modules only, with no third-party dependencies. Use `markji_card_syntax action=help` to look up the raw Markji syntax, then `action=validate` to validate content before writing; sync additionally checks that image / audio file ids referenced by the content exist in Markji.

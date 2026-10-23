@@ -2,6 +2,8 @@
 
 # dsh-markji-bridge
 
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/oxmyxo/dsh-markji-bridge)
+
 给 DeepSeek Harness（DSH）的 agent 用的墨墨记忆卡（Markji）插件。它在本地维护一份卡组 / 章节 / 卡片缓存，agent 可以搜索、阅读、新建、修改、归档卡片；所有修改先写入本地队列，再按「先拉取、三方合并、后推送」的顺序同步到云端，冲突单独报告，不影响其他卡片。
 
 17 个 `markji_*` 工具，只用 Node 内置模块实现，无第三方依赖。写卡前可先用 `markji_card_syntax` 的 `action=help` 查询原始 Markji 语法，再用 `action=validate` 校验正文；推送时还会检查正文里的图片 / 音频文件是否可用。
