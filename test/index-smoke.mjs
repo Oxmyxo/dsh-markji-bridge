@@ -25,13 +25,13 @@ if (typeof disposer !== 'function') throw new Error('apply did not return the ef
 if (inject.join(',') !== 'tools') throw new Error('inject mismatch');
 await new Promise((r) => setTimeout(r, 150));
 const names = [...registered.keys()];
-if (names.length !== 17) throw new Error('expected 17 tools, got ' + names.length + ': ' + names.join(','));
-const expected = ['markji_decks','markji_chapters','markji_cards','markji_search','markji_card_get','markji_card_syntax','markji_card_create','markji_card_update','markji_card_archive','markji_cards_move','markji_chapters_edit','markji_sync','markji_sync_status','markji_failures','markji_status','markji_conflict_resolve','markji_file'];
+if (names.length !== 19) throw new Error('expected 19 tools, got ' + names.length + ': ' + names.join(','));
+const expected = ['markji_decks','markji_chapters','markji_cards','markji_search','markji_card_get','markji_cards_get','markji_card_syntax','markji_card_create','markji_cards_create','markji_card_update','markji_card_archive','markji_cards_move','markji_chapters_edit','markji_sync','markji_sync_status','markji_failures','markji_status','markji_conflict_resolve','markji_file'];
 for (const name of expected) if (!registered.has(name)) throw new Error('missing tool ' + name);
 const statusDef = registered.get('markji_status');
 const status = await statusDef.execute({});
 if (!status || !status.cache || typeof status.cache.cards !== 'number') throw new Error('status tool output: ' + JSON.stringify(status));
-if (status.version !== '1.4.2') throw new Error('status version: ' + status.version);
+if (status.version !== '1.5.0') throw new Error('status version: ' + status.version);
 const syntaxDef = registered.get('markji_card_syntax');
 const validSyntax = await syntaxDef.execute({ content: String.raw`正文 \[字面括号\]` });
 if (!validSyntax || validSyntax.ok !== true) throw new Error('syntax tool rejected valid content: ' + JSON.stringify(validSyntax));
@@ -45,6 +45,16 @@ const pictureHelp = await syntaxDef.execute({ action: 'help', format: 'picture' 
 if (!pictureHelp || pictureHelp.ok !== true || pictureHelp.tag !== 'Pic') {
   throw new Error('syntax help format lookup: ' + JSON.stringify(pictureHelp));
 }
+const batchSyntax = await syntaxDef.execute({ contents: ['正文', '[X##bad]'] });
+if (!batchSyntax || batchSyntax.mode !== 'batch' || batchSyntax.total !== 2 || batchSyntax.valid !== 1 || batchSyntax.invalid !== 1) {
+  throw new Error('syntax batch output: ' + JSON.stringify(batchSyntax));
+}
+const batchGet = registered.get('markji_cards_get');
+if (!batchGet || !batchGet.parameters.properties.cards) throw new Error('markji_cards_get schema');
+const batchCreate = registered.get('markji_cards_create');
+if (!batchCreate || !batchCreate.parameters.properties.cards) throw new Error('markji_cards_create schema');
+const updateDef = registered.get('markji_card_update');
+if (!updateDef || !updateDef.parameters.properties.updates) throw new Error('markji_card_update batch schema');
 if (!status.cache || typeof status.cache.bytes !== 'number') throw new Error('status cache: ' + JSON.stringify(status.cache));
 const handle = new DatabaseSync(join(dir, 'cache.db'), { readOnly: true });
 try {

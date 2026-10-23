@@ -6,14 +6,14 @@
 
 A Markji (maimemo) flashcard plugin for DeepSeek Harness (DSH) agents. It maintains a local cache of decks, chapters, and cards, so an agent can search, read, create, update, and archive cards. Every edit is written to a local queue first, then synced to the cloud in a pull → three-way merge → push order. Conflicts are reported separately and never block the rest of the cards.
 
-17 `markji_*` tools, implemented with Node.js built-in modules only, with no third-party dependencies. Use `markji_card_syntax action=help` to look up the raw Markji syntax, then `action=validate` to validate content before writing; sync additionally checks that image / audio file ids referenced by the content exist in Markji.
+19 `markji_*` tools, implemented with Node.js built-in modules only, with no third-party dependencies. Use `markji_card_syntax action=help` to look up the raw Markji syntax, then `action=validate` to validate content before writing. For batch work use `markji_cards_get`, `markji_cards_create`, the `updates` array of `markji_card_update`, and the `contents` / `cards` arrays of `markji_card_syntax`. Sync additionally checks that image / audio file ids referenced by the content exist in Markji.
 
 ## Features
 
 - **Local cache**: one SQLite file, `cache.db`, stores indexes, card bodies, the pending queue, conflicts, and sync tasks. Routine searches and reads do not call the API.
 - **Plain-text search**: each card also stores a plain-text column with formatting markers, image/audio markers, data URIs, and base64 removed. Search matches the plain text only, so results stay clean and readable.
 - **Safe writes**: edits are queued; before pushing, remote changes are pulled and three-way merged, so stale data never overwrites the cloud. Conflicts are deduplicated per card and can be resolved individually.
-- **Syntax help, write preflight, and media check**: `markji_card_syntax action=help` returns the raw Markji syntax for one format or all formats; `action=validate` only validates content and never generates or rewrites it. Before pushing, `markji_sync` validates each pending body again and batch-queries the `Pic` / `Audio` file ids. Syntax errors, missing files, and query failures are recorded on the card while the queue is kept, so nothing is half-written.
+- **Syntax help, batch operations, write preflight, and media check**: `markji_card_syntax action=help` returns the raw Markji syntax for one format or all formats; `action=validate` accepts one `content`, several `contents`, or several `cards` and only validates content, never generating or rewriting it. `markji_cards_get` reads several cards at once, while `markji_cards_create` and the `updates` array of `markji_card_update` queue several writes. Before pushing, `markji_sync` validates each pending body again and batch-queries the `Pic` / `Audio` file ids. Syntax errors, missing files, and query failures are recorded on the card while the queue is kept, so nothing is half-written.
 - **Background sync**: a sync task returns a handle immediately and exposes progress. After a crash or plugin restart, resume with the same handle without creating duplicate cloud objects.
 - **Archive**: move cards into the same deck's "Archive" chapter and insert an archive note into the body. Repeated calls are idempotent.
 - **Multi-process safety**: multiple DSH processes on one machine can share a cache directory; writes are serialized with a file lock.
@@ -76,13 +76,41 @@ Never commit the token or write it into a config file. The plugin's `apiKey` con
 markji_decks({ refresh: true })
 markji_search({ query: "sorting", deck: "Algorithms" })
 markji_card_get({ card: "<card_id>" })
+markji_cards_get({ cards: ["<card_id_1>", "<card_id_2>"] })
 markji_card_syntax({ action: "help" })
 markji_card_syntax({ action: "help", format: "picture" })
 markji_card_syntax({ content: "<Markji rich text>" })
+markji_card_syntax({ cards: ["<card_id_1>", "<card_id_2>"] })
+markji_card_syntax({ contents: ["<Markji rich text 1>", "<Markji rich text 2>"] })
 markji_sync({ mode: "auto" })
 ```
 
 The first call pulls cloud data (it can take a while for large accounts); later reads use the local cache. Use `markji_status` / `markji_sync_status` to inspect state and progress.
+
+## Batch operations
+
+Use these entries when several cards are involved:
+
+```text
+markji_cards_get({ cards: ["<id1>", "<id2>"] })
+markji_card_syntax({ cards: ["<id1>", "<id2>"] })              // validate existing cards
+markji_card_syntax({ contents: ["<body1>", "<body2>"] })        // validate bodies not written yet
+markji_cards_create({ deck: "<deck>", chapter: "<chapter>", cards: [
+  { content: "<body1>" }, { content: "<body2>", order: 10 },
+] })
+markji_card_update({ updates: [
+  { card: "<id1>", content: "<new body1>" },
+  { card: "<id2>", content: "<new body2>" },
+] })
+markji_card_archive({ cards: ["<id1>", "<id2>"] })              // archive was already batch
+markji_cards_move({ cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
+```
+
+- The new batch entries (multi-card reads, syntax `contents` / `cards`, batch create, `updates`) accept at most 50 items. Archive and move keep their existing non-empty-array behavior. `markji_cards_get` collapses duplicate ids; unknown ids are returned as per-item errors and do not abort the batch.
+- Results list `ok` and errors per item. Writes are not a transaction: bad items are reported while the other items are still queued, and successful items still need `markji_sync`.
+- `markji_cards_get` omits the redundant `text` view by default; pass `include_text: true` when needed.
+- Batch syntax validation is local only and does not query media availability; `markji_sync` still performs the media preflight.
+- Batch output can exceed `maxOutputChars`; split large operations into smaller batches.
 
 ## Tools
 
@@ -93,9 +121,11 @@ The first call pulls cloud data (it can take a while for large accounts); later 
 | `markji_cards` | Paginate / search cached cards |
 | `markji_search` | Find cards by deck name, chapter name, plain text, and update time |
 | `markji_card_get` | Read one card: `content` (rich text) + `text` (plain text) |
-| `markji_card_syntax` | Look up syntax help (one format or all), or validate raw Markji syntax |
-| `markji_card_create` | Create a card (raw `content` only) |
-| `markji_card_update` | Update card content |
+| `markji_cards_get` | Read several cards by id; unknown ids are reported per item |
+| `markji_card_syntax` | Look up syntax help, or validate raw Markji syntax one at a time or in batches |
+| `markji_card_create` | Create one card (raw `content` only) |
+| `markji_cards_create` | Create several cards in the same deck and chapter |
+| `markji_card_update` | Update one card, or several with `updates` |
 | `markji_card_archive` | Archive cards into the "Archive" chapter |
 | `markji_cards_move` | Move cards to another chapter |
 | `markji_chapters_edit` | Create / rename / sort chapters |
@@ -117,9 +147,11 @@ The first call pulls cloud data (it can take a while for large accounts); later 
 | `markji_cards` | `deck?` `chapter?` `query?` `limit?` `offset?` | `{total, offset, limit, has_more, cards, cache}` |
 | `markji_search` | `query?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, filters, cards, cache}` |
 | `markji_card_get` | `card` `deck?` | `{card}` |
-| `markji_card_syntax` | `action?: validate/help`; validate: `content`; help: `format?` | validate: `{ok, errors, warnings, stats, media}`; help: `{ok, action, format, rules, nesting, formats}` |
+| `markji_cards_get` | `cards` (1-50, deduplicated) `include_text?` | `{ok, requested, found, missing, cards, cache}`; each `cards` item is `{card_id, ok, card\|error}` |
+| `markji_card_syntax` | `action?: validate/help`; validate: `content` or `contents` or `cards`; help: `format?` | single validate: `{ok, errors, warnings, stats, media}`; batch: `{ok, action, mode, source, total, valid, invalid, missing?, syntax_invalid?, results}`; help: `{ok, action, format, rules, nesting, formats}` |
 | `markji_card_create` | `deck` `chapter` `content` `order?` `grammar_version?` | `{ok, card_id, deck_id, chapter_id, status, changed, pending, message}` |
-| `markji_card_update` | `card` `content` `grammar_version?` | `{ok, card_id, status, changed, pending, message}` |
+| `markji_cards_create` | `deck` `chapter` `cards` (1-50, each `{content, order?, grammar_version?}`) | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}` |
+| `markji_card_update` | `card` `content` `grammar_version?`, or `updates` (1-50, each `{card, content, grammar_version?}`) | single: `{ok, card_id, status, changed, pending, message}`; batch: `{ok, action, mode, total, updated, unchanged, failed, partial, results}` |
 | `markji_card_archive` | `cards` (non-empty array) | `{ok, archived, content_updated, already_archived, moved, chapters, status, pending, message}` |
 | `markji_cards_move` | `cards` `to_chapter` `deck?` `order?` | `{ok, moved, to_chapter_id, status, pending, message}` |
 | `markji_chapters_edit` | `action: create/rename/sort`; create: `deck` `name` `order?`; rename: `chapter` `name` `deck?`; sort: `deck` `chapter_ids` | `{ok, action, chapter_id?, deck_id?, chapters?, status, pending, message}` |
@@ -138,7 +170,11 @@ The first call pulls cloud data (it can take a while for large accounts); later 
 markji_card_syntax({ action: "help" })                     // every format
 markji_card_syntax({ action: "help", format: "picture" })  // just pictures
 markji_card_syntax({ content: "<Markji rich text>" })      // validate content
+markji_card_syntax({ contents: ["<body1>", "<body2>"] })    // validate several bodies
+markji_card_syntax({ cards: ["<id1>", "<id2>"] })           // validate several existing cards
 ```
+
+In batch mode pass only one of `content`, `contents`, or `cards`. Each item is validated independently, so one bad item does not stop the others. `cards` validates the effective body (the pending edit when one exists).
 
 For `action=help`, omit `format` or pass `all`; pass `basic` for just the general rules and nesting matrix. Supported format ids are `text-style`, `cloze`, `audio`, `card-ref`, `paragraph`, `choice`, `picture`, `formula`, and `answer-line`; the corresponding tag (for example `Pic`) and Chinese aliases (for example `图片`) are also accepted. Help is static and never inspects or rewrites content; the syntax follows the [Markji syntax guide](https://tutuji333.github.io/markji-faq/questions/content/card-syntax-guide/).
 
@@ -288,7 +324,7 @@ The defaults live in the bundle's `cordis.patch.yml`; all are optional:
 - Auto sync runs after `idleQuietMs` (default 2 minutes) of quiet following the most recent tool call. When nothing is pending, it pulls every `autoPullMs` (default 15 minutes). After a failure it retries every `retryBackoffMs` (default 5 minutes).
 - Open conflicts pause auto push, but pulls continue.
 - Requests use a sliding-window rate limit (default 18 per 10 seconds, 36 per minute, 7,800 per 5 hours); concurrent syncs queue automatically.
-- Card content is limited to 100,000 characters; `markji_cards` accepts `limit` up to 200 and `markji_search` up to 100.
+- Card content is limited to 100,000 characters; `markji_cards` accepts `limit` up to 200, `markji_search` up to 100, and the new batch entries accept at most 50 items each (archive / move are not capped).
 
 ## Error codes and troubleshooting
 
@@ -343,22 +379,22 @@ Common issues:
 
 | Environment | Result |
 | --- | --- |
-| Windows + Node 25.2.1 | Real-account testing: sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, crash resume; unit 92/92, E2E 13/13, smoke 17 tools. |
-| WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Repository copied to the Linux filesystem (`/tmp`): unit 92/92, E2E 13/13, entry smoke 17 tools. |
+| Windows + Node 25.2.1 | Real-account testing: sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, crash resume; unit 96/96, E2E 13/13, smoke 19 tools. |
+| WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Repository copied to the Linux filesystem (`/tmp`): unit 96/96, E2E 13/13, entry smoke 19 tools. |
 | macOS | Not tested on real hardware; the code uses only Node built-in modules and should work. |
 
 The WSL verification ran the repository's tests and entry smoke check directly in Linux; it did not install a second DSH inside WSL. To actually use the plugin under WSL, DSH itself should also run in that distribution.
 
-The syntax validator and media preflight added in 1.4.1, and the syntax help added in 1.4.2, are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test; syntax help is static and makes no network calls. The real-account checks in the table above were performed before these changes; no live token was available for a fresh real-account media query.
+The syntax validator and media preflight added in 1.4.1, the syntax help added in 1.4.2, and the batch reads / writes added in 1.5.0 are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Batch operations run against the local cache and queue and need no new provider endpoint. The real-account checks in the table above were performed before these changes; no live token was available for a fresh real-account media query.
 
 ## Development and testing
 
 Node >= 22.13 is required. Run from the repository source:
 
 ```bash
-node --test "test/*.test.js"   # unit / integration tests (92)
+node --test "test/*.test.js"   # unit / integration tests (96)
 node test/e2e-mock.mjs         # mock-server end-to-end (13)
-node test/index-smoke.mjs      # entry smoke test (17 tools)
+node test/index-smoke.mjs      # entry smoke test (19 tools)
 ```
 
 There is also an internal independent verification suite used for pre-release cross-checking; it is not published in the repository. The public repository contains only the tests listed above.

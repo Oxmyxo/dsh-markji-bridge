@@ -115,7 +115,7 @@ test('migrateLegacyCache is a no-op without a legacy cache or valid paths', asyn
 test('the package manifest is ready for a public release', async () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.name, 'dsh-markji-bridge');
-  assert.equal(pkg.version, '1.4.2');
+  assert.equal(pkg.version, '1.5.0');
   assert.equal(pkg.private, undefined);
   assert.equal(pkg.license, 'MIT');
   assert.match(pkg.engines.node, />=22\.13\.0/);
