@@ -234,3 +234,63 @@ test('resuming adopts cards the provider already created instead of duplicating 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+
+test('watchTaskProgress and watchTask mirror live and terminal state', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'markji-task-watch-'));
+  const mock = await startMockMarkji({ token: 'task-token-watch' });
+  let engine = null;
+  let store = null;
+  try {
+    mock.newDeck('监视牌组 A', { chapters: ['甲'] });
+    mock.newDeck('监视牌组 B', { chapters: ['乙'] });
+    ({ engine, store } = makeEngine(dir, mock, { delayListChaptersMs: 100 }));
+    await engine.ready();
+    const started = await engine.startSync({ mode: 'pull', full: true });
+    const taskId = started.task.task_id;
+    const progress = [];
+    const terminal = [];
+    assert.equal(engine.watchTaskProgress(taskId, (view) => progress.push(view)), true);
+    assert.equal(engine.watchTask(taskId, (view) => terminal.push(view)), true);
+    const done = await engine.waitForTask(taskId, 20000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(done.status, 'completed', JSON.stringify(done.error));
+    assert.equal(terminal.length, 1, 'terminal watcher runs exactly once');
+    assert.equal(terminal[0].status, 'completed');
+    assert.ok(progress.length > 0, 'progress watcher receives at least the seed snapshot');
+    assert.equal(progress[0].task_id, taskId);
+    await engine.stop();
+    await store.close();
+  } finally {
+    await mock.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('cancelTask stops a running task and leaves it resumable', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'markji-task-cancel-'));
+  const mock = await startMockMarkji({ token: 'task-token-cancel' });
+  let engine = null;
+  let store = null;
+  try {
+    mock.newDeck('取消牌组 A', { chapters: ['甲'] });
+    mock.newDeck('取消牌组 B', { chapters: ['乙'] });
+    ({ engine, store } = makeEngine(dir, mock, { delayListChaptersMs: 200 }));
+    await engine.ready();
+    const started = await engine.startSync({ mode: 'pull', full: true });
+    const taskId = started.task.task_id;
+    assert.equal(engine.cancelTask(taskId, 'test cancel'), true);
+    const stopped = await engine.waitForTask(taskId, 20000);
+    assert.equal(stopped.status, 'interrupted', JSON.stringify(stopped));
+    assert.equal(stopped.error.code, 'cancelled');
+    const resumed = await engine.startSync({ mode: 'pull', full: true, resume: taskId });
+    assert.equal(resumed.task.task_id, taskId);
+    const done = await engine.waitForTask(taskId, 20000);
+    assert.equal(done.status, 'completed', JSON.stringify(done.error));
+    await engine.stop();
+    await store.close();
+  } finally {
+    await mock.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

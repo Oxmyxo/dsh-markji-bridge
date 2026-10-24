@@ -31,7 +31,7 @@ for (const name of expected) if (!registered.has(name)) throw new Error('missing
 const syncDef = registered.get('markji_sync');
 const status = await syncDef.execute({ action: 'state' });
 if (!status || !status.cache || typeof status.cache.cards !== 'number') throw new Error('state output: ' + JSON.stringify(status));
-if (status.version !== '2.0.0') throw new Error('status version: ' + status.version);
+if (status.version !== '2.1.0') throw new Error('status version: ' + status.version);
 const progress = await syncDef.execute({ action: 'progress' });
 if (!progress || !Array.isArray(progress.tasks)) throw new Error('progress output: ' + JSON.stringify(progress));
 const failures = await syncDef.execute({ action: 'failures' });

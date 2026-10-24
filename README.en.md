@@ -14,7 +14,7 @@ Four action-based `markji_*` tools, implemented with Node.js built-in modules on
 - **Plain-text search**: each card also stores a plain-text column with formatting markers, image/audio markers, data URIs, and base64 removed. Search matches the plain text only, so results stay clean and readable.
 - **Safe writes**: edits are queued; before pushing, remote changes are pulled and three-way merged, so stale data never overwrites the cloud. Conflicts are deduplicated per card and can be resolved individually.
 - **Syntax help, batch operations, write preflight, and media check**: `markji_cards action=syntax_help` returns the raw Markji syntax for one format or all formats; `action=validate` accepts one `content`, several `contents`, or several `cards` and only validates content, never generating or rewriting it. `action=get` reads several cards at once, `action=create` accepts `new_cards` that may target different chapters or decks in one call, and `action=update` accepts an `updates` array that queues several writes. Before pushing, `markji_sync` validates each pending body again and batch-queries the `Pic` / `Audio` file ids. Syntax errors, missing files, and query failures are recorded on the card while the queue is kept, so nothing is half-written.
-- **Background sync**: a sync task returns a handle immediately and exposes progress. After a crash or plugin restart, resume with the same handle without creating duplicate cloud objects.
+- **Background sync**: a sync task returns a handle immediately and exposes progress. After a crash or plugin restart, resume with the same handle without creating duplicate cloud objects. When DSH loads `dsh-tool-jobs`, `markji_sync({ action: "start" })` also registers the task as a DSH background job owned by the calling session and returns `job_id`; it appears in the running-background-jobs list, `job_output` reads it, and DSH sends the standard completion notice. Killing that job cancels the sync at its next checkpoint, marks the stored task `interrupted`, and leaves it resumable.
 - **Archive and chapter operations**: `markji_cards({ action: "archive" })` moves cards into the same deck's "Archive" chapter and inserts an archive note into the body; repeated calls are idempotent. `markji_decks` supports chapter detail, create, rename, and sort (the provider has no chapter-delete endpoint).
 - **Multi-process safety**: multiple DSH processes on one machine can share a cache directory; writes are serialized with a file lock.
 
@@ -87,7 +87,7 @@ markji_cards({ action: "validate", contents: ["<Markji rich text 1>", "<Markji r
 markji_sync({ action: "start", mode: "auto" })
 ```
 
-The first call pulls cloud data (it can take a while for large accounts); later reads use the local cache. Use `markji_sync({ action: "state" })` / `markji_sync({ action: "progress" })` to inspect state and progress.
+The first call pulls cloud data (it can take a while for large accounts); later reads use the local cache. Use `markji_sync({ action: "state" })` / `markji_sync({ action: "progress" })` to inspect state and progress. When DSH loads `dsh-tool-jobs`, `start` also returns `job_id`: progress appears in DSH's background-jobs list, a completion notice is delivered automatically, and `job_output` reads the result.
 
 ## Batch operations
 
@@ -149,6 +149,12 @@ Only four tools are registered; `action` selects the operation, and omitting it 
 | `markji_sync` | `resolve` | Resolve a conflict (keep_local / keep_remote / use_content) |
 | `markji_file` | `upload` / `query` | Upload a file / query file metadata |
 
+### 2.1.0: sync as a DSH background job
+
+`markji_sync({ action: "start" })` now returns an optional `job_id`. When DSH loads `dsh-tool-jobs` and the call comes from a live session, the plugin registers the sync task as a DSH background job owned by that session: it appears in DSH's running background jobs, its progress follows the sync stage, `job_output` reads the task result, and DSH sends its standard completion notice when the job settles (completed, failed, or killed).
+
+Without `dsh-tool-jobs`, or when the call does not come from a session, no `job_id` is returned and behavior is identical to 2.0.0. Killing the DSH job cancels the sync at its next checkpoint: queued edits are kept, the stored task becomes `interrupted`, and it can be resumed with `markji_sync({ action: "start", resume: "<task_id>" })`. The `progress` / `state` / `failures` / `resolve` actions remain available.
+
 ### Migrating from 1.x
 
 2.0.0 no longer registers the fine-grained 1.x tools; replace the old call with one tool plus an `action`. Fields are unchanged except that batch creation now uses `new_cards`:
@@ -190,7 +196,7 @@ Only four tools are registered; `action` selects the operation, and omitting it 
 | `markji_cards` / `archive` | `cards` (non-empty array) | `{ok, archived, content_updated, already_archived, moved, chapters, status, pending, message}` |
 | `markji_cards` / `validate` | `content` or `contents` or `cards` (only one) | single: `{ok, errors, warnings, stats, media}`; batch: `{ok, action, mode, source, total, valid, invalid, missing?, syntax_invalid?, results}` |
 | `markji_cards` / `syntax_help` | `format?` | `{ok, action, format, rules, nesting, formats}` |
-| `markji_sync` / `start` | `mode?: auto/pull/push` `full?` `resume?` | `{task, already_running?}` |
+| `markji_sync` / `start` | `mode?: auto/pull/push` `full?` `resume?` | `{task, job_id?, already_running?}`; `job_id` requires DSH background-job support |
 | `markji_sync` / `progress` | `task_id?` | `{active, tasks}` |
 | `markji_sync` / `state` | none | `{version, data_dir, cache_file, configured, base_url, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
 | `markji_sync` / `failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, recovery, truncated}` |
@@ -415,27 +421,27 @@ Common issues:
 
 | Environment | Result |
 | --- | --- |
-| Windows + Node 25.2.1 | 2.0.0: unit 98/98, E2E 13/13, entry smoke 4 tools. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x. |
+| Windows + Node 25.2.1 | 2.1.0: unit 103/103, E2E 13/13, entry smoke 4 tools. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x; the 2.1.0 DSH background-job integration was also exercised in a live DSH. |
 | WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Last verified on 1.6.0: unit 97/97, E2E 13/13, entry smoke 19 tools; 2.0.0 has not been re-run in WSL. |
 | macOS | Not tested on real hardware; the code uses only Node built-in modules and should work. |
 
 The WSL verification ran the repository's tests and entry smoke check directly in Linux; it did not install a second DSH inside WSL. To actually use the plugin under WSL, DSH itself should also run in that distribution.
 
-2.0.0 consolidates the 19 fine-grained tools into four action-based tools and adds deck detail, chapter detail, and `with_cards`; chapter create / rename / sort reuse the existing engine. These paths are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
+2.0.0 consolidates the 19 fine-grained tools into four action-based tools and adds deck detail, chapter detail, and `with_cards`; chapter create / rename / sort reuse the existing engine. 2.1.0 connects sync tasks to DSH's native background-job mechanism instead of sending a plugin-specific completion message. These paths are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
 
 ## Development and testing
 
 Node >= 22.13 is required. Run from the repository source:
 
 ```bash
-node --test "test/*.test.js"   # unit / integration tests (98)
+node --test "test/*.test.js"   # unit / integration tests (103)
 node test/e2e-mock.mjs         # mock-server end-to-end (13)
 node test/index-smoke.mjs      # entry smoke test (4 tools)
 ```
 
 There is also an internal independent verification suite used for pre-release cross-checking; it is not published in the repository. The public repository contains only the tests listed above.
 
-Tests must run from the repository source. Main files: `index.js` (entry and configuration), `lib/api.js` (HTTP client), `lib/store.js` (cache and write locks), `lib/sync.js` (sync engine), `lib/plain-text.js` (plain-text conversion), `lib/card-syntax.js` (raw syntax validation), and `lib/tools.js` (tool definitions).
+Tests must run from the repository source. Main files: `index.js` (entry and configuration), `lib/api.js` (HTTP client), `lib/store.js` (cache and write locks), `lib/sync.js` (sync engine), `lib/jobs.js` (DSH background-job bridge), `lib/plain-text.js` (plain-text conversion), `lib/card-syntax.js` (raw syntax validation), and `lib/tools.js` (tool definitions). The module contract is [DESIGN.md](./DESIGN.md).
 
 ## License
 

@@ -14,7 +14,7 @@
 - **纯文本搜索**：每张卡另存一列去掉格式标记、图片 / 音频标记、data URI 和 base64 的纯文本，搜索只匹配纯文本，结果干净可读。
 - **安全写入**：修改先排队，推送前先拉取远端变更并三方合并，不会用旧数据覆盖云端；冲突按卡片去重，可逐条解决。
 - **语法帮助、批量操作、写前校验与媒体预检**：`markji_cards` 的 `action=syntax_help` 可按格式或全部查询原始 Markji 语法；`action=validate` 支持单条 `content`、多条 `contents` 或按 `cards` 批量校验，只检查正文，不生成或改写内容。`action=get` 一次读取多张卡，`action=create` 的 `new_cards` 可在一次调用中创建跨章节 / 卡组的卡片，`action=update` 的 `updates` 一次排队多张卡的写入；`markji_sync` 推送前再次校验正文，并批量查询 `Pic` / `Audio` 引用的文件 id。语法错误、文件缺失或查询失败都会记录到该卡并保留队列，不会只写一半。
-- **后台同步**：同步任务立即返回句柄，可查进度；进程崩溃或插件重启后用同一句柄续跑，不重复创建云端对象。
+- **后台同步**：同步任务立即返回句柄，可查进度；进程崩溃或插件重启后用同一句柄续跑，不重复创建云端对象。DSH 加载了 `dsh-tool-jobs` 时，`markji_sync({ action: "start" })` 还会把任务登记为当前会话拥有的 DSH 后台任务，返回 `job_id`；任务出现在「正在运行的后台任务」中，可用 `job_output` 查看，结束后由 DSH 发送完成通知。终止后台任务会在下一个检查点取消同步，任务变为 `interrupted`，仍可 `resume`。
 - **归档与章节操作**：`markji_cards({ action: "archive" })` 把卡片移入同卡组「归档」章节并在正文插入归档说明，重复调用幂等；`markji_decks` 支持章节详情、新建、重命名和排序（provider 不提供章节删除接口）。
 - **多进程安全**：同一台机器的多个 DSH 进程可共用一个缓存目录，写入通过文件锁串行。
 
@@ -87,7 +87,7 @@ markji_cards({ action: "validate", contents: ["<Markji 富文本 1>", "<Markji �
 markji_sync({ action: "start", mode: "auto" })
 ```
 
-首次调用会拉取云端数据（卡片多时需要一点时间），之后读操作走本地缓存。状态和进度用 `markji_sync({ action: "state" })` / `markji_sync({ action: "progress" })` 查看。
+首次调用会拉取云端数据（卡片多时需要一点时间），之后读操作走本地缓存。状态和进度用 `markji_sync({ action: "state" })` / `markji_sync({ action: "progress" })` 查看。若 DSH 加载了 `dsh-tool-jobs`，`start` 还会返回 `job_id`：在 DSH 的后台任务列表里能直接看到进度，任务结束后会自动收到完成通知，也可以用 `job_output` 读取结果。
 
 ## 批量操作
 
@@ -149,6 +149,12 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | `markji_sync` | `resolve` | 解决冲突（keep_local / keep_remote / use_content） |
 | `markji_file` | `upload` / `query` | 上传文件 / 查询文件信息 |
 
+### 2.1.0：同步接入 DSH 后台任务
+
+`markji_sync({ action: "start" })` 的返回值新增可选字段 `job_id`。当 DSH 加载了 `dsh-tool-jobs` 且调用来自一个活动会话时，插件会把同步任务登记为该会话拥有的 DSH 后台任务：任务出现在 DSH 的「正在运行的后台任务」中，进度随同步阶段更新，`job_output` 可读取任务结果，任务结束（完成 / 失败 / 被终止）时由 DSH 发送标准完成通知。
+
+未加载 `dsh-tool-jobs` 或调用不是来自会话时，没有 `job_id`，行为与 2.0.0 相同。终止该 DSH 后台任务会在下一个检查点取消同步：已写入的队列不丢，任务状态变为 `interrupted`，之后可用 `markji_sync({ action: "start", resume: "<task_id>" })` 续跑。`markji_sync` 的 `progress` / `state` / `failures` / `resolve` 仍然可用。
+
 ### 2.0.0 迁移：旧工具名
 
 2.0.0 不再注册 1.x 的细粒度工具；旧调用改成一个工具加 `action`。字段基本不变，只有新建批量字段改为 `new_cards`：
@@ -190,7 +196,7 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | `markji_cards` / `archive` | `cards`（非空数组） | `{ok, archived, content_updated, already_archived, moved, chapters, status, pending, message}` |
 | `markji_cards` / `validate` | `content` 或 `contents` 或 `cards`（只能一个） | 单条：`{ok, errors, warnings, stats, media}`；批量：`{ok, action, mode, source, total, valid, invalid, missing?, syntax_invalid?, results}` |
 | `markji_cards` / `syntax_help` | `format?` | `{ok, action, format, rules, nesting, formats}` |
-| `markji_sync` / `start` | `mode?: auto/pull/push` `full?` `resume?` | `{task, already_running?}` |
+| `markji_sync` / `start` | `mode?: auto/pull/push` `full?` `resume?` | `{task, job_id?, already_running?}`；`job_id` 需要 DSH 后台任务支持 |
 | `markji_sync` / `progress` | `task_id?` | `{active, tasks}` |
 | `markji_sync` / `state` | 无 | `{version, data_dir, cache_file, configured, base_url, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
 | `markji_sync` / `failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, recovery, truncated}` |
@@ -415,27 +421,27 @@ Failures = {
 
 | 环境 | 结果 |
 | --- | --- |
-| Windows + Node 25.2.1 | 2.0.0：单元 98/98，E2E 13/13，入口冒烟 4 个工具。同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑曾在 1.x 真实账号实测。 |
+| Windows + Node 25.2.1 | 2.1.0：单元 103/103，E2E 13/13，入口冒烟 4 个工具。同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑曾在 1.x 真实账号实测；2.1.0 的 DSH 后台任务接入另在真实 DSH 中做了联调。 |
 | WSL2 Ubuntu 26.04（Linux 6.18，Node v22.22.1） | 最后一次验证在 1.6.0：单元 97/97，E2E 13/13，入口冒烟 19 个工具；2.0.0 尚未在 WSL 复跑。 |
 | macOS | 未实机测试；代码只用 Node 内置模块，理论上可用。 |
 
 WSL 验证是在 Linux 环境里直接跑仓库的测试和入口烟测，不是在 WSL 里另装一套 DSH。要在 WSL 里实际使用，DSH 本身也应运行在该发行版中。
 
-2.0.0 把 19 个细粒度工具合并为 4 个按 `action` 组织的工具，并新增卡组详情、章节详情与 `with_cards`；章节新建 / 重命名 / 排序沿用原有引擎。以上由本地单元、入口烟测与 mock HTTP 端到端覆盖；真实账号实测完成于此前版本，本次没有用真实账号重新做媒体查询。
+2.0.0 把 19 个细粒度工具合并为 4 个按 `action` 组织的工具，并新增卡组详情、章节详情与 `with_cards`；章节新建 / 重命名 / 排序沿用原有引擎。2.1.0 把同步任务接入 DSH 的原生后台任务机制，不再由插件自己发送完成消息。以上由本地单元、入口烟测与 mock HTTP 端到端覆盖；真实账号实测完成于此前版本，本次没有用真实账号重新做媒体查询。
 
 ## 开发与测试
 
 需要 Node >= 22.13，从仓库源码运行：
 
 ```bash
-node --test "test/*.test.js"   # 单元 / 集成测试（98 项）
+node --test "test/*.test.js"   # 单元 / 集成测试（103 项）
 node test/e2e-mock.mjs         # mock 服务端端到端（13 项）
 node test/index-smoke.mjs      # 入口烟测（4 个工具）
 ```
 
 另有一套不随仓库发布的内部独立验证集，用于发布前交叉检查；公开仓库只包含上面列出的测试。
 
-测试需要从本仓库源码运行。主要文件：`index.js`（入口与配置）、`lib/api.js`（HTTP 客户端）、`lib/store.js`（缓存与写锁）、`lib/sync.js`（同步引擎）、`lib/plain-text.js`（纯文本转换）、`lib/card-syntax.js`（原始语法校验）、`lib/tools.js`（工具定义）。
+测试需要从本仓库源码运行。主要文件：`index.js`（入口与配置）、`lib/api.js`（HTTP 客户端）、`lib/store.js`（缓存与写锁）、`lib/sync.js`（同步引擎）、`lib/jobs.js`（DSH 后台任务桥接）、`lib/plain-text.js`（纯文本转换）、`lib/card-syntax.js`（原始语法校验）、`lib/tools.js`（工具定义）。模块契约见 [DESIGN.md](./DESIGN.md)。
 
 ## 许可
 

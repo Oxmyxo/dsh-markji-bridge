@@ -11,6 +11,5 @@ content.v2-backup-*
 .DS_Store
 Thumbs.db
 
-# internal design/verification material, not part of the public repo
-DESIGN.md
+# internal verification material, not part of the public repo
 test/verify/
