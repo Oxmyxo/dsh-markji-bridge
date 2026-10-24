@@ -38,8 +38,9 @@ lib/card-syntax.js | tools-layer | raw Markji syntax validator (no compiler or e
 test/card-syntax.test.js | tools-layer | raw syntax validation and media extraction tests
 lib/store.js | cache-sync | cache persistence (schema v4: cards.text)
 lib/sync.js | cache-sync | pull/merge/push engine, plain-text search/views
+lib/search.js | cache-sync | substring / fuzzy / regex query matcher (pure, no cache access)
 lib/jobs.js | cache-sync | bridge a sync task to a DSH background job (progress, settle, cancel)
-test/sync-task.test.js, test/jobs.test.js, test/verify/*.test.js | cache-sync / verifier | task, job bridge + store/merge/push tests
+test/sync-task.test.js, test/jobs.test.js, test/search.test.js, test/tool-search.test.js, test/verify/*.test.js | cache-sync / tools-layer / verifier | task, job bridge, search + store/merge/push tests
 index.js, lib/tools.js, package.json, cordis.patch.yml, locale/*.json, icon.svg | tools-layer | entry + tools + manifest
 test/e2e-mock.mjs, test/mock-server.mjs | Lead | HTTP mock end-to-end
 test/verify/** | verifier | independent checks
@@ -339,8 +340,8 @@ Local id format: local_ + 12 lowercase hex chars, generated with node:crypto ran
     //   status(): object,
     //   listDecks({ refresh, folder_id } = {}): Promise<object>,
     //   listChapters({ deck, refresh } = {}): Promise<object>,
-    //   listCards({ deck, chapter, query, limit, offset } = {}): Promise<object>,
-    //   searchCards({ query, deck, deck_name, chapter, chapter_name,
+    //   listCards({ deck, chapter, query, query_mode, regex_flags, min_score, limit, offset } = {}): Promise<object>,
+    //   searchCards({ query, query_mode, regex_flags, min_score, deck, deck_name, chapter, chapter_name,
     //                 updated_after, updated_before, limit, offset, refresh } = {}): Promise<object>,
     //   getCard({ card, deck } = {}): Promise<object>,
     //   createCard({ deck, chapter, content, order, grammar_version }): Promise<object>,
@@ -596,19 +597,25 @@ notification. It is optional at runtime:
   deck -> { decks: [{ deck_id, deck_name, chapters: [ChapterView] }], cache }.
   ChapterView = { id, name, revision, order, card_count, pending, updated_time, local }.
 - listCards -> { total, offset, limit, has_more, cards: [CardSummary], cache }, filtered by
-  deck and/or chapter; query = case-insensitive substring over the derived plain text (see
-  lib/plain-text.js; also match card id);
-  default limit 50, max 200. CardSummary = { id, deck_id, deck_name, chapter_id, chapter_name,
-  status: 'synced'|'dirty'|'new'|'conflict', revision, snippet, updated_time }.
+  deck and/or chapter; query is matched over the derived plain text (see lib/plain-text.js;
+  also the card id), with query_mode selecting substring (default), fuzzy, or regex (see
+  lib/search.js). Fuzzy matches add score and matched_by, and sort best-first; regex matches add
+  matched_by. Default limit 50, max 200. CardSummary = { id, deck_id, deck_name, chapter_id,
+  chapter_name, status: 'synced'|'dirty'|'new'|'conflict', revision, snippet, updated_time }
+  plus optional score / matched_by.
 - searchCards -> { total, offset, limit, has_more, filters, cards: [CardSummary], cache }.
-  All filters AND together and run in memory over the loaded cache: query is a case-insensitive
-  substring of the derived plain text (formatting tags, media references, data URIs and base64 are
-  excluded; also matches card id); deck/deck_name and chapter/chapter_name are exact
+  All filters AND together and run in memory over the loaded cache: query is matched by
+  query_mode = substring (default, case-insensitive substring of the derived plain text and
+  card id), fuzzy (approximate plain-text match with score, tolerating small edits; min_score
+  threshold, default 0.6; sorted best-first), or regex (JavaScript RegExp over plain text and
+  card id; regex_flags i/m/s/u, default i). Formatting tags, media references, data URIs and
+  base64 are excluded. deck/deck_name and chapter/chapter_name are exact
   id or case-insensitive name substring; updated_after/updated_before accept ISO 8601 or epoch
   milliseconds (numbers or numeric strings) and compare cloud.updated_time with the local
   updated_time as fallback, inclusive. limit 1-100 (default 20), offset >= 0; invalid or
-  reversed times reject with invalid_argument; unknown deck/chapter ids reject. snippet is
-  centred on the first content match. refresh=true forces a pull (otherwise the pull TTL applies).
+  reversed times reject with invalid_argument; invalid query_mode / regex_flags / min_score
+  reject with invalid_argument; unknown deck/chapter ids reject. snippet is centred on the
+  first content match. refresh=true forces a pull (otherwise the pull TTL applies).
 - getCard -> { card: { id, deck_id, chapter_id, chapter_name, content, text, grammar_version,
   status, cloud: {revision, updated_time} | null, pending, conflict: ConflictView|null,
   created_time, updated_time } }. content is the rich text needed for updates; text is the
@@ -688,8 +695,8 @@ markji_decks | chapter_get | { chapter, deck?, with_cards?, refresh? } | engine.
 markji_decks | chapter_create | { deck, name, order? } | engine.editChapter({ action:'create' })
 markji_decks | chapter_rename | { chapter, name, deck? } | engine.editChapter({ action:'rename' })
 markji_decks | chapter_sort | { deck, chapter_ids } | engine.editChapter({ action:'sort' })
-markji_cards | list (default) | { deck?, chapter?, query?, limit?, offset? } | engine.listCards
-markji_cards | search | { query?, deck?, deck_name?, chapter?, chapter_name?, updated_after?, updated_before?, limit?, offset?, refresh? } | engine.searchCards
+markji_cards | list (default) | { deck?, chapter?, query?, query_mode?, regex_flags?, min_score?, limit?, offset? } | engine.listCards
+markji_cards | search | { query?, query_mode?, regex_flags?, min_score?, deck?, deck_name?, chapter?, chapter_name?, updated_after?, updated_before?, limit?, offset?, refresh? } | engine.searchCards
 markji_cards | get | { card?, cards?: string[], include_text? } | engine.getCards (per-id ok/error, one refresh on miss)
 markji_cards | create | { deck?, chapter?, new_cards: [{content, deck?, chapter?, order?, grammar_version?}] } | engine.createCard per item (top-level targets are defaults; batch result)
 markji_cards | update | { card, content, grammar_version? } or { updates: [{card, content, grammar_version?}] } | engine.updateCard per item (batch result)
@@ -793,6 +800,11 @@ the network.
   owned by another DSH process (that job could never settle locally).
 - Cold load reads all v4 tables inside one SQLite transaction; refreshIfChanged combines file
   size/mtime with PRAGMA data_version so same-millisecond foreign commits are not missed.
+- Search tests (test/search.test.js, test/tool-search.test.js): substring stays the default;
+  fuzzy tolerates a one-character typo, adds score/matched_by, honors min_score, and sorts
+  best-first; regex honors default i and explicit m, matches by id, rejects invalid patterns and
+  flags; listCards accepts the same query options; the markji_cards tool forwards query_mode,
+  regex_flags and min_score and rejects invalid values.
 - Plain-text tests (test/plain-text.test.js): formatting tags keep visible text; media, data URIs
   and long bare base64 runs are dropped; markup must not be mistaken for Markdown links
   (str.[T#B#find](sub) -> str.find(sub)); search/listCards/snippets never match base64 or
@@ -818,7 +830,8 @@ the network.
    warnings that affect loading; the 4 markji_* tools are visible to the agent.
 3. Live read-only check with the real token: markji_decks action=list lists the real decks;
    markji_decks action=get / chapter_get and markji_cards action=list/search/get work on a real
-   deck; cache.db appears under the data dir.
+   deck, including search with query_mode=fuzzy and query_mode=regex; cache.db appears under the
+   data dir.
 4. Mock HTTP end-to-end (test/e2e-mock.mjs) proves create/update/move/chapter writes,
    pull-before-push, remote-change merge, conflict recording without aborting other cards,
    and local id remapping over real HTTP.

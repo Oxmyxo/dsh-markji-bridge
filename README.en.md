@@ -11,7 +11,7 @@ Four action-based `markji_*` tools, implemented with Node.js built-in modules on
 ## Features
 
 - **Local cache**: one SQLite file, `cache.db`, stores indexes, card bodies, the pending queue, conflicts, and sync tasks. Routine searches and reads do not call the API.
-- **Plain-text search**: each card also stores a plain-text column with formatting markers, image/audio markers, data URIs, and base64 removed. Search matches the plain text only, so results stay clean and readable.
+- **Plain-text search**: each card also stores a plain-text column with formatting markers, image/audio markers, data URIs, and base64 removed. Search matches the plain text only, so results stay clean and readable. `markji_cards` `query_mode` supports `substring` (default), `fuzzy` (approximate matches that tolerate small typos and sort by score), and `regex` (JavaScript regular expression; `regex_flags` accepts `imsu`, default `i`). `min_score` tunes the fuzzy threshold.
 - **Safe writes**: edits are queued; before pushing, remote changes are pulled and three-way merged, so stale data never overwrites the cloud. Conflicts are deduplicated per card and can be resolved individually.
 - **Syntax help, batch operations, write preflight, and media check**: `markji_cards action=syntax_help` returns the raw Markji syntax for one format or all formats; `action=validate` accepts one `content`, several `contents`, or several `cards` and only validates content, never generating or rewriting it. `action=get` reads several cards at once, `action=create` accepts `new_cards` that may target different chapters or decks in one call, and `action=update` accepts an `updates` array that queues several writes. Before pushing, `markji_sync` validates each pending body again and batch-queries the `Pic` / `Audio` file ids. Syntax errors, missing files, and query failures are recorded on the card while the queue is kept, so nothing is half-written.
 - **Background sync**: a sync task returns a handle immediately and exposes progress. After a crash or plugin restart, resume with the same handle without creating duplicate cloud objects. When DSH loads `dsh-tool-jobs`, `markji_sync({ action: "start" })` also registers the task as a DSH background job owned by the calling session and returns `job_id`; it appears in the running-background-jobs list, `job_output` reads it, and DSH sends the standard completion notice. Killing that job cancels the sync at its next checkpoint, marks the stored task `interrupted`, and leaves it resumable.
@@ -77,6 +77,8 @@ markji_decks({ action: "list", refresh: true })
 markji_decks({ action: "get", deck: "<deck_id>" })
 markji_decks({ action: "chapter_get", chapter: "<chapter_id>", with_cards: true })
 markji_cards({ action: "search", query: "sorting", deck_name: "Algorithms" })
+markji_cards({ action: "search", query: "variabel init", query_mode: "fuzzy" })
+markji_cards({ action: "search", query: "^SPI\s+clock", query_mode: "regex" })
 markji_cards({ action: "get", card: "<card_id>" })
 markji_cards({ action: "get", cards: ["<card_id_1>", "<card_id_2>"] })
 markji_cards({ action: "syntax_help" })
@@ -136,7 +138,7 @@ Only four tools are registered; `action` selects the operation, and omitting it 
 | `markji_decks` | `chapter_list` | List chapters for one deck or for every cached deck |
 | `markji_decks` | `chapter_get` | Read one chapter, optionally with card summaries |
 | `markji_decks` | `chapter_create` / `chapter_rename` / `chapter_sort` | Create / rename / sort chapters |
-| `markji_cards` | `list` / `search` | Paginate and filter, or search by deck name, chapter name, and update time |
+| `markji_cards` | `list` / `search` | Paginate and filter, or search by deck name, chapter name, and update time; supports substring, fuzzy, and regex queries |
 | `markji_cards` | `get` | Read one or several cards by id; unknown ids are reported per item |
 | `markji_cards` | `create` | Batch-create from `new_cards`, including across chapters or decks |
 | `markji_cards` | `update` | Update one card (`card` + `content`) or several (`updates`) |
@@ -148,6 +150,16 @@ Only four tools are registered; `action` selects the operation, and omitting it 
 | `markji_sync` | `failures` | View failed cards, conflicts, and recovery advice |
 | `markji_sync` | `resolve` | Resolve a conflict (keep_local / keep_remote / use_content) |
 | `markji_file` | `upload` / `query` | Upload a file / query file metadata |
+
+### 2.2.0: fuzzy and regex search
+
+`markji_cards` `list` / `search` now accept `query_mode`:
+
+- `substring` (default): case-insensitive substring, the 2.1.0 behavior.
+- `fuzzy`: approximate matching that tolerates small typos, insertions, and deletions; results carry `score` (0-1) and sort best-first, and `min_score` tunes the threshold (default 0.6).
+- `regex`: treats `query` as a JavaScript regular expression; `regex_flags` accepts `i` / `m` / `s` / `u` (default `i`).
+
+`matched_by` reports whether the card body or id matched; `search` `filters` echoes `query_mode`, `regex_flags`, and `min_score`. `list` accepts the same query options but keeps its response shape.
 
 ### 2.1.0: sync as a DSH background job
 
@@ -187,8 +199,8 @@ Without `dsh-tool-jobs`, or when the call does not come from a session, no `job_
 | `markji_decks` / `chapter_create` | `deck` `name` `order?` | `{ok, action, chapter_id, deck_id, status, pending, message}` |
 | `markji_decks` / `chapter_rename` | `chapter` `name` `deck?` | `{ok, action, chapter_id, status, pending, message}` |
 | `markji_decks` / `chapter_sort` | `deck` `chapter_ids` | `{ok, action, deck_id, chapters, status, pending, message}` |
-| `markji_cards` / `list` | `deck?` `chapter?` `query?` `limit?` `offset?` | `{total, offset, limit, has_more, cards, cache}` |
-| `markji_cards` / `search` | `query?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, filters, cards, cache}` |
+| `markji_cards` / `list` | `deck?` `chapter?` `query?` `query_mode?` `regex_flags?` `min_score?` `limit?` `offset?` | `{total, offset, limit, has_more, cards, cache}` |
+| `markji_cards` / `search` | `query?` `query_mode?` `regex_flags?` `min_score?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, filters, cards, cache}` |
 | `markji_cards` / `get` | `card?` `cards?` (1-50, deduplicated) `include_text?` | `{ok, requested, found, missing, cards, cache}`; each `cards` item is `{card_id, ok, card\|error}` |
 | `markji_cards` / `create` | `new_cards` (1-50; each `{content, deck?, chapter?, order?, grammar_version?}`); top-level `deck?` `chapter?` are defaults | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`; top-level defaults are `null` when omitted |
 | `markji_cards` / `update` | `card` `content` `grammar_version?`, or `updates` (1-50, each `{card, content, grammar_version?}`) | single: `{ok, card_id, status, changed, pending, message}`; batch: `{ok, action, mode, total, updated, unchanged, failed, partial, results}` |
@@ -421,27 +433,27 @@ Common issues:
 
 | Environment | Result |
 | --- | --- |
-| Windows + Node 25.2.1 | 2.1.0: unit 104/104, E2E 13/13, entry smoke 4 tools. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x; the 2.1.0 DSH background-job integration was also exercised in a live DSH. |
+| Windows + Node 25.2.1 | 2.2.0: unit 106/106, E2E 13/13, entry smoke 4 tools. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x; the 2.1.0 DSH background-job integration and 2.2.0 fuzzy / regex search were also exercised in a live DSH. |
 | WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Last verified on 1.6.0: unit 97/97, E2E 13/13, entry smoke 19 tools; 2.0.0 has not been re-run in WSL. |
 | macOS | Not tested on real hardware; the code uses only Node built-in modules and should work. |
 
 The WSL verification ran the repository's tests and entry smoke check directly in Linux; it did not install a second DSH inside WSL. To actually use the plugin under WSL, DSH itself should also run in that distribution.
 
-2.0.0 consolidates the 19 fine-grained tools into four action-based tools and adds deck detail, chapter detail, and `with_cards`; chapter create / rename / sort reuse the existing engine. 2.1.0 connects sync tasks to DSH's native background-job mechanism instead of sending a plugin-specific completion message. These paths are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
+2.0.0 consolidates the 19 fine-grained tools into four action-based tools and adds deck detail, chapter detail, and `with_cards`; chapter create / rename / sort reuse the existing engine. 2.1.0 connects sync tasks to DSH's native background-job mechanism instead of sending a plugin-specific completion message. 2.2.0 adds `fuzzy` approximate matching and `regex` regular-expression queries to card search while keeping the default `substring` behavior. These paths are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
 
 ## Development and testing
 
 Node >= 22.13 is required. Run from the repository source:
 
 ```bash
-node --test "test/*.test.js"   # unit / integration tests (104)
+node --test "test/*.test.js"   # unit / integration tests (106)
 node test/e2e-mock.mjs         # mock-server end-to-end (13)
 node test/index-smoke.mjs      # entry smoke test (4 tools)
 ```
 
 There is also an internal independent verification suite used for pre-release cross-checking; it is not published in the repository. The public repository contains only the tests listed above.
 
-Tests must run from the repository source. Main files: `index.js` (entry and configuration), `lib/api.js` (HTTP client), `lib/store.js` (cache and write locks), `lib/sync.js` (sync engine), `lib/jobs.js` (DSH background-job bridge), `lib/plain-text.js` (plain-text conversion), `lib/card-syntax.js` (raw syntax validation), and `lib/tools.js` (tool definitions). The module contract is [DESIGN.md](./DESIGN.md).
+Tests must run from the repository source. Main files: `index.js` (entry and configuration), `lib/api.js` (HTTP client), `lib/store.js` (cache and write locks), `lib/sync.js` (sync engine), `lib/search.js` (substring / fuzzy / regex matching), `lib/jobs.js` (DSH background-job bridge), `lib/plain-text.js` (plain-text conversion), `lib/card-syntax.js` (raw syntax validation), and `lib/tools.js` (tool definitions). The module contract is [DESIGN.md](./DESIGN.md).
 
 ## License
 

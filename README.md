@@ -11,7 +11,7 @@
 ## 特性
 
 - **本地缓存**：单个 SQLite 文件 `cache.db`，索引、卡片正文、待推送队列、冲突和同步任务都在一个库里，日常搜索和阅读不请求 API。
-- **纯文本搜索**：每张卡另存一列去掉格式标记、图片 / 音频标记、data URI 和 base64 的纯文本，搜索只匹配纯文本，结果干净可读。
+- **纯文本搜索**：每张卡另存一列去掉格式标记、图片 / 音频标记、data URI 和 base64 的纯文本，搜索只匹配纯文本，结果干净可读。`markji_cards` 的 `query_mode` 支持 `substring`（默认，子串）、`fuzzy`（近似匹配，容忍少量错字并按相似度排序）和 `regex`（JavaScript 正则，`regex_flags` 可设 `imsu`，默认 `i`）；`fuzzy` 可用 `min_score` 调整阈值。
 - **安全写入**：修改先排队，推送前先拉取远端变更并三方合并，不会用旧数据覆盖云端；冲突按卡片去重，可逐条解决。
 - **语法帮助、批量操作、写前校验与媒体预检**：`markji_cards` 的 `action=syntax_help` 可按格式或全部查询原始 Markji 语法；`action=validate` 支持单条 `content`、多条 `contents` 或按 `cards` 批量校验，只检查正文，不生成或改写内容。`action=get` 一次读取多张卡，`action=create` 的 `new_cards` 可在一次调用中创建跨章节 / 卡组的卡片，`action=update` 的 `updates` 一次排队多张卡的写入；`markji_sync` 推送前再次校验正文，并批量查询 `Pic` / `Audio` 引用的文件 id。语法错误、文件缺失或查询失败都会记录到该卡并保留队列，不会只写一半。
 - **后台同步**：同步任务立即返回句柄，可查进度；进程崩溃或插件重启后用同一句柄续跑，不重复创建云端对象。DSH 加载了 `dsh-tool-jobs` 时，`markji_sync({ action: "start" })` 还会把任务登记为当前会话拥有的 DSH 后台任务，返回 `job_id`；任务出现在「正在运行的后台任务」中，可用 `job_output` 查看，结束后由 DSH 发送完成通知。终止后台任务会在下一个检查点取消同步，任务变为 `interrupted`，仍可 `resume`。
@@ -77,6 +77,8 @@ markji_decks({ action: "list", refresh: true })
 markji_decks({ action: "get", deck: "<deck_id>" })
 markji_decks({ action: "chapter_get", chapter: "<chapter_id>", with_cards: true })
 markji_cards({ action: "search", query: "排序", deck_name: "算法" })
+markji_cards({ action: "search", query: "变量初始话", query_mode: "fuzzy" })
+markji_cards({ action: "search", query: "^SPI\s+时钟", query_mode: "regex" })
 markji_cards({ action: "get", card: "<card_id>" })
 markji_cards({ action: "get", cards: ["<card_id_1>", "<card_id_2>"] })
 markji_cards({ action: "syntax_help" })
@@ -136,7 +138,7 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | `markji_decks` | `chapter_list` | 列出一个或全部卡组的章节 |
 | `markji_decks` | `chapter_get` | 读一个章节，可带卡片摘要 |
 | `markji_decks` | `chapter_create` / `chapter_rename` / `chapter_sort` | 新建 / 重命名 / 排序章节 |
-| `markji_cards` | `list` / `search` | 分页、过滤或按卡组名 / 章节名 / 更新时间搜索 |
+| `markji_cards` | `list` / `search` | 分页、过滤或按卡组名 / 章节名 / 更新时间搜索；支持子串、模糊和正则查询 |
 | `markji_cards` | `get` | 按 id 读一张或多张卡；未知 id 逐项报告 |
 | `markji_cards` | `create` | 用 `new_cards` 批量新建，支持跨章节 / 卡组 |
 | `markji_cards` | `update` | 改一张（`card` + `content`）或多张（`updates`） |
@@ -148,6 +150,16 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | `markji_sync` | `failures` | 查看失败卡片、冲突与恢复建议 |
 | `markji_sync` | `resolve` | 解决冲突（keep_local / keep_remote / use_content） |
 | `markji_file` | `upload` / `query` | 上传文件 / 查询文件信息 |
+
+### 2.2.0：搜索支持模糊与正则
+
+`markji_cards` 的 `list` / `search` 新增 `query_mode`：
+
+- `substring`（默认）：大小写不敏感的子串，保持 2.1.0 行为。
+- `fuzzy`：近似匹配，容忍少量错字、插入或删除；结果带 `score`（0-1）并按分数从高到低排序，`min_score` 可调阈值（默认 0.6）。
+- `regex`：把 `query` 当作 JavaScript 正则，`regex_flags` 支持 `i` / `m` / `s` / `u`（默认 `i`）。
+
+`matched_by` 会标明命中卡片正文还是 id；`search` 的 `filters` 会回显 `query_mode`、`regex_flags` 和 `min_score`。`list` 也支持同样的查询参数，但返回结构不变。
 
 ### 2.1.0：同步接入 DSH 后台任务
 
@@ -187,8 +199,8 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | `markji_decks` / `chapter_create` | `deck` `name` `order?` | `{ok, action, chapter_id, deck_id, status, pending, message}` |
 | `markji_decks` / `chapter_rename` | `chapter` `name` `deck?` | `{ok, action, chapter_id, status, pending, message}` |
 | `markji_decks` / `chapter_sort` | `deck` `chapter_ids` | `{ok, action, deck_id, chapters, status, pending, message}` |
-| `markji_cards` / `list` | `deck?` `chapter?` `query?` `limit?` `offset?` | `{total, offset, limit, has_more, cards, cache}` |
-| `markji_cards` / `search` | `query?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, filters, cards, cache}` |
+| `markji_cards` / `list` | `deck?` `chapter?` `query?` `query_mode?` `regex_flags?` `min_score?` `limit?` `offset?` | `{total, offset, limit, has_more, cards, cache}` |
+| `markji_cards` / `search` | `query?` `query_mode?` `regex_flags?` `min_score?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, filters, cards, cache}` |
 | `markji_cards` / `get` | `card?` `cards?`（1-50，去重）`include_text?` | `{ok, requested, found, missing, cards, cache}`；`cards` 每项 `{card_id, ok, card\|error}` |
 | `markji_cards` / `create` | `new_cards`（1-50；每项 `{content, deck?, chapter?, order?, grammar_version?}`）；顶层 `deck?` `chapter?` 是默认值 | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`；顶层默认值未提供时为 `null` |
 | `markji_cards` / `update` | `card` `content` `grammar_version?`，或 `updates`（1-50，每项 `{card, content, grammar_version?}`） | 单条：`{ok, card_id, status, changed, pending, message}`；批量：`{ok, action, mode, total, updated, unchanged, failed, partial, results}` |
@@ -421,27 +433,27 @@ Failures = {
 
 | 环境 | 结果 |
 | --- | --- |
-| Windows + Node 25.2.1 | 2.1.0：单元 104/104，E2E 13/13，入口冒烟 4 个工具。同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑曾在 1.x 真实账号实测；2.1.0 的 DSH 后台任务接入另在真实 DSH 中做了联调。 |
+| Windows + Node 25.2.1 | 2.2.0：单元 106/106，E2E 13/13，入口冒烟 4 个工具。同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑曾在 1.x 真实账号实测；2.1.0 的 DSH 后台任务接入、2.2.0 的模糊 / 正则搜索另在真实 DSH 中做了联调。 |
 | WSL2 Ubuntu 26.04（Linux 6.18，Node v22.22.1） | 最后一次验证在 1.6.0：单元 97/97，E2E 13/13，入口冒烟 19 个工具；2.0.0 尚未在 WSL 复跑。 |
 | macOS | 未实机测试；代码只用 Node 内置模块，理论上可用。 |
 
 WSL 验证是在 Linux 环境里直接跑仓库的测试和入口烟测，不是在 WSL 里另装一套 DSH。要在 WSL 里实际使用，DSH 本身也应运行在该发行版中。
 
-2.0.0 把 19 个细粒度工具合并为 4 个按 `action` 组织的工具，并新增卡组详情、章节详情与 `with_cards`；章节新建 / 重命名 / 排序沿用原有引擎。2.1.0 把同步任务接入 DSH 的原生后台任务机制，不再由插件自己发送完成消息。以上由本地单元、入口烟测与 mock HTTP 端到端覆盖；真实账号实测完成于此前版本，本次没有用真实账号重新做媒体查询。
+2.0.0 把 19 个细粒度工具合并为 4 个按 `action` 组织的工具，并新增卡组详情、章节详情与 `with_cards`；章节新建 / 重命名 / 排序沿用原有引擎。2.1.0 把同步任务接入 DSH 的原生后台任务机制，不再由插件自己发送完成消息。2.2.0 为卡片搜索增加 `fuzzy` 近似匹配与 `regex` 正则查询，并保留默认的 `substring` 行为。以上由本地单元、入口烟测与 mock HTTP 端到端覆盖；真实账号实测完成于此前版本，本次没有用真实账号重新做媒体查询。
 
 ## 开发与测试
 
 需要 Node >= 22.13，从仓库源码运行：
 
 ```bash
-node --test "test/*.test.js"   # 单元 / 集成测试（104 项）
+node --test "test/*.test.js"   # 单元 / 集成测试（106 项）
 node test/e2e-mock.mjs         # mock 服务端端到端（13 项）
 node test/index-smoke.mjs      # 入口烟测（4 个工具）
 ```
 
 另有一套不随仓库发布的内部独立验证集，用于发布前交叉检查；公开仓库只包含上面列出的测试。
 
-测试需要从本仓库源码运行。主要文件：`index.js`（入口与配置）、`lib/api.js`（HTTP 客户端）、`lib/store.js`（缓存与写锁）、`lib/sync.js`（同步引擎）、`lib/jobs.js`（DSH 后台任务桥接）、`lib/plain-text.js`（纯文本转换）、`lib/card-syntax.js`（原始语法校验）、`lib/tools.js`（工具定义）。模块契约见 [DESIGN.md](./DESIGN.md)。
+测试需要从本仓库源码运行。主要文件：`index.js`（入口与配置）、`lib/api.js`（HTTP 客户端）、`lib/store.js`（缓存与写锁）、`lib/sync.js`（同步引擎）、`lib/search.js`（子串 / 模糊 / 正则匹配）、`lib/jobs.js`（DSH 后台任务桥接）、`lib/plain-text.js`（纯文本转换）、`lib/card-syntax.js`（原始语法校验）、`lib/tools.js`（工具定义）。模块契约见 [DESIGN.md](./DESIGN.md)。
 
 ## 许可
 
