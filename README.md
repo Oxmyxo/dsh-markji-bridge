@@ -11,7 +11,7 @@
 ## 特性
 
 - **本地缓存**：单个 SQLite 文件 `cache.db`，索引、卡片正文、待推送队列、冲突和同步任务都在一个库里，日常搜索和阅读不请求 API。
-- **纯文本搜索**：每张卡另存一列去掉格式标记、图片 / 音频标记、data URI 和 base64 的纯文本，搜索只匹配纯文本，结果干净可读。`markji_cards` 的 `query_mode` 支持 `substring`（默认，子串）、`fuzzy`（近似匹配，容忍少量错字并按相似度排序）和 `regex`（JavaScript 正则，`regex_flags` 可设 `imsu`，默认 `i`）；`fuzzy` 可用 `min_score` 调整阈值。
+- **纯文本搜索**：每张卡另存一列去掉格式标记、图片 / 音频标记、data URI 和 base64 的纯文本，搜索只匹配纯文本，结果干净可读。`markji_cards` 的 `query_mode` 支持 `substring`（默认，子串）、`fuzzy`（近似匹配，容忍少量错字并按相似度排序）和 `regex`（JavaScript 正则，`regex_flags` 可设 `imsu`，默认 `i`）；`fuzzy` 可用 `min_score` 调整阈值。`query` 只放一个短短语（通常 1-3 个词）：`fuzzy` 空格分词时要求各项都近似命中；若 3 个以上词没有任何卡片全命中，会自动取查询里更稀有的词作为锚点，退化为部分匹配：返回 `partial: true`、`fallback_terms` 和每张卡的 `matched_terms`，优先展示命中罕用词的卡片，并在 `hint` 中说明。不要把多个概念硬拼成一个 query。
 - **安全写入**：修改先排队，推送前先拉取远端变更并三方合并，不会用旧数据覆盖云端；冲突按卡片去重，可逐条解决。
 - **语法帮助、批量操作、写前校验与媒体预检**：`markji_cards` 的 `action=syntax_help` 可按格式或全部查询原始 Markji 语法；`action=validate` 支持单条 `content`、多条 `contents` 或按 `cards` 批量校验，只检查正文，不生成或改写内容。`action=get` 一次读取多张卡，`action=create` 的 `new_cards` 可在一次调用中创建跨章节 / 卡组的卡片，`action=update` 的 `updates` 一次排队多张卡的写入；`markji_sync` 推送前再次校验正文，并批量查询 `Pic` / `Audio` 引用的文件 id。语法错误、文件缺失或查询失败都会记录到该卡并保留队列，不会只写一半。
 - **后台同步**：同步任务立即返回句柄，可查进度；进程崩溃或插件重启后用同一句柄续跑，不重复创建云端对象。DSH 加载了 `dsh-tool-jobs` 时，`markji_sync({ action: "start" })` 还会把任务登记为当前会话拥有的 DSH 后台任务，返回 `job_id`；任务出现在「正在运行的后台任务」中，可用 `job_output` 查看，结束后由 DSH 发送完成通知。终止后台任务会在下一个检查点取消同步，任务变为 `interrupted`，仍可 `resume`。
@@ -156,10 +156,10 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 `markji_cards` 的 `list` / `search` 新增 `query_mode`：
 
 - `substring`（默认）：大小写不敏感的子串，保持 2.1.0 行为。
-- `fuzzy`：近似匹配，容忍少量错字、插入或删除；结果带 `score`（0-1）并按分数从高到低排序，`min_score` 可调阈值（默认 0.6）。
+- `fuzzy`：近似匹配，容忍少量错字、插入或删除；结果带 `score`（0-1）并按分数从高到低排序，`min_score` 可调阈值（默认 0.6）。它比较的是整条 query；空格分词时各项都要近似命中，所以应一次搜一个短短语。若 3 个以上词没有全命中，则取最稀有的词作为锚点退回部分匹配（`partial: true`、`fallback_terms`），用 `matched_terms` 标明每张卡命中了哪些词。
 - `regex`：把 `query` 当作 JavaScript 正则，`regex_flags` 支持 `i` / `m` / `s` / `u`（默认 `i`）。
 
-`matched_by` 会标明命中卡片正文还是 id；`search` 的 `filters` 会回显 `query_mode`、`regex_flags` 和 `min_score`。`list` 也支持同样的查询参数，但返回结构不变。
+`matched_by` 会标明命中卡片正文还是 id；`search` 的 `filters` 会回显 `query_mode`、`regex_flags` 和 `min_score`。`list` 也支持同样的查询参数。没有结果时，`list` / `search` 会额外返回 `hint`。模糊查询退化到部分匹配时还会返回 `partial: true`、`fallback_terms`，每张卡带 `matched_terms`。
 
 ### 2.1.0：同步接入 DSH 后台任务
 

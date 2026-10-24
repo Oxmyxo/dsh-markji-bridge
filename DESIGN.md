@@ -596,20 +596,34 @@ notification. It is optional at runtime:
 - listChapters({deck}) -> { deck_id, deck_name, chapters: [ChapterView], cache }; without
   deck -> { decks: [{ deck_id, deck_name, chapters: [ChapterView] }], cache }.
   ChapterView = { id, name, revision, order, card_count, pending, updated_time, local }.
-- listCards -> { total, offset, limit, has_more, cards: [CardSummary], cache }, filtered by
+- listCards -> { total, offset, limit, has_more, cards: [CardSummary], cache,
+  partial?, fallback_terms?, hint? }, filtered by
   deck and/or chapter; query is matched over the derived plain text (see lib/plain-text.js;
   also the card id), with query_mode selecting substring (default), fuzzy, or regex (see
   lib/search.js). Fuzzy matches add score and matched_by, and sort best-first; regex matches add
-  matched_by. Default limit 50, max 200. CardSummary = { id, deck_id, deck_name, chapter_id,
+  matched_by. If a fuzzy query has 3+ whitespace terms and no card matches all of them, it
+  falls back to partial matches: result.partial = true, up to three rarest present terms become
+  result.fallback_terms anchors, cards matching an anchor are ranked by anchor count then rarity,
+  each card gets matched_terms, and result.hint explains the fallback. A zero-result query gets
+  a hint suggesting a shorter phrase or regex alternative. Default limit 50, max 200.
+  CardSummary = { id, deck_id, deck_name, chapter_id,
   chapter_name, status: 'synced'|'dirty'|'new'|'conflict', revision, snippet, updated_time }
-  plus optional score / matched_by.
-- searchCards -> { total, offset, limit, has_more, filters, cards: [CardSummary], cache }.
+  plus optional score / matched_by / matched_terms.
+- searchCards -> { total, offset, limit, has_more, filters, cards: [CardSummary], cache,
+  partial?, fallback_terms?, hint? }.
   All filters AND together and run in memory over the loaded cache: query is matched by
   query_mode = substring (default, case-insensitive substring of the derived plain text and
   card id), fuzzy (approximate plain-text match with score, tolerating small edits; min_score
   threshold, default 0.6; sorted best-first), or regex (JavaScript RegExp over plain text and
-  card id; regex_flags i/m/s/u, default i). Formatting tags, media references, data URIs and
-  base64 are excluded. deck/deck_name and chapter/chapter_name are exact
+  card id; regex_flags i/m/s/u, default i). Fuzzy compares one phrase: when the query has
+  whitespace-separated terms, every term must match approximately and the score averages the
+  terms, so a long concept list does not pass on a single exact word. Formatting tags, media
+  references, data URIs and base64 are excluded. If a fuzzy query has 3+ whitespace terms and
+  no card matches all of them, it falls back to partial matches: result.partial = true, the
+  three rarest present terms become result.fallback_terms anchors, cards matching an anchor are
+  ranked by anchor count then rarity, each card gets matched_terms, and result.hint explains
+  the fallback. A zero-result query gets a hint suggesting a shorter phrase or regex alternative.
+  deck/deck_name and chapter/chapter_name are exact
   id or case-insensitive name substring; updated_after/updated_before accept ISO 8601 or epoch
   milliseconds (numbers or numeric strings) and compare cloud.updated_time with the local
   updated_time as fallback, inclusive. limit 1-100 (default 20), offset >= 0; invalid or
@@ -801,10 +815,14 @@ the network.
 - Cold load reads all v4 tables inside one SQLite transaction; refreshIfChanged combines file
   size/mtime with PRAGMA data_version so same-millisecond foreign commits are not missed.
 - Search tests (test/search.test.js, test/tool-search.test.js): substring stays the default;
-  fuzzy tolerates a one-character typo, adds score/matched_by, honors min_score, and sorts
-  best-first; regex honors default i and explicit m, matches by id, rejects invalid patterns and
-  flags; listCards accepts the same query options; the markji_cards tool forwards query_mode,
-  regex_flags and min_score and rejects invalid values.
+  fuzzy tolerates a one-character typo, adds score/matched_by, honors min_score, sorts
+  best-first, ANDs all space-separated terms, does not pass a multi-term query on partial
+  character overlap, falls back to rare-term-anchored partial matches with fallback_terms and
+  matched_terms for 3+ terms when no card matches all, and returns a hint when a long query
+  matches nothing; regex honors default i and
+  explicit m, matches by id, rejects invalid patterns and flags; listCards accepts the
+  same query options and returns the zero-result hint; the markji_cards tool forwards
+  query_mode, regex_flags and min_score and rejects invalid values.
 - Plain-text tests (test/plain-text.test.js): formatting tags keep visible text; media, data URIs
   and long bare base64 runs are dropped; markup must not be mistaken for Markdown links
   (str.[T#B#find](sub) -> str.find(sub)); search/listCards/snippets never match base64 or

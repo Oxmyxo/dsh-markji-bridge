@@ -100,6 +100,28 @@ test('search supports fuzzy, regex and query flags', async () => {
     const strictFuzzy = await engine.searchCards({ query: '变量初始话', query_mode: 'fuzzy', min_score: 0.9 });
     assert.equal(strictFuzzy.total, 0);
 
+    const multiTerm = await engine.searchCards({ query: '变量 初始化', query_mode: 'fuzzy' });
+    assert.deepEqual(multiTerm.cards.map((card) => card.id), ['k1']);
+    const noisy = await engine.searchCards({ query: '变量 指针', query_mode: 'fuzzy' });
+    assert.equal(noisy.total, 0);
+    const partial = await engine.searchCards({ query: '变量 初始化 指针', query_mode: 'fuzzy' });
+    assert.equal(partial.partial, true);
+    assert.equal(partial.cards[0].id, 'k1');
+    assert.deepEqual(partial.cards[0].matched_terms, ['变量', '初始化']);
+    assert.equal(partial.fallback_terms.length, 3);
+    assert.ok(partial.cards[0].score > 0);
+    assert.match(partial.hint, /partial matches/);
+    const missing = await engine.searchCards({ query: '变量 指针 时钟', query_mode: 'fuzzy' });
+    assert.equal(missing.partial, true);
+    assert.equal(missing.total, 3);
+    assert.equal(missing.fallback_terms.length, 3);
+    assert.ok(missing.cards.every((card) => Array.isArray(card.matched_terms) && card.matched_terms.length === 1));
+    assert.match(missing.hint, /partial matches/);
+    const missingList = await engine.listCards({ query: '变量 指针 时钟', query_mode: 'fuzzy' });
+    assert.equal(missingList.partial, true);
+    assert.equal(missingList.total, 3);
+    assert.match(missingList.hint, /partial matches/);
+
     const regex = await engine.searchCards({ query: '变量|指针', query_mode: 'regex' });
     assert.deepEqual(regex.cards.map((card) => card.id), ['k1', 'k2']);
     assert.equal(regex.filters.query_mode, 'regex');
