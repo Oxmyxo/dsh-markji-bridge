@@ -82,6 +82,48 @@ test('startSyncJob mirrors progress and settles with the task', async () => {
   assert.match(output.at(-1), /Markji sync \(auto\) completed/);
 });
 
+test('a foreign running task does not create a job that can never settle', async () => {
+  const registered = new Map();
+  let started = 0;
+  const ctx = {
+    tools: {
+      register(spec) {
+        registered.set(spec.name, spec);
+        return () => {};
+      },
+    },
+    get(name) {
+      return name === 'jobs' ? { start() { started += 1; return 'should-not-happen'; } } : undefined;
+    },
+  };
+  const engine = {
+    async ready() {},
+    async startSync() {
+      return { task: task(), already_running: true };
+    },
+    ownsTask() {
+      return false;
+    },
+    watchTask() {
+      return true;
+    },
+    watchTaskProgress() {
+      return true;
+    },
+  };
+  const dispose = registerTools(ctx, { engine, config: { maxOutputChars: 20000 }, log: () => {} });
+  try {
+    const result = await registered.get('markji_sync').execute(
+      { action: 'start' },
+      { agent: { id: 'session-2' }, callId: 'call-2' },
+    );
+    assert.equal(result.job_id, undefined);
+    assert.equal(started, 0);
+  } finally {
+    dispose();
+  }
+});
+
 test('markji_sync action=start exposes one DSH job per session and task', async () => {
   const registered = new Map();
   const starts = [];
@@ -95,6 +137,9 @@ test('markji_sync action=start exposes one DSH job per session and task', async 
     async ready() {},
     async startSync() {
       return { task: task() };
+    },
+    ownsTask() {
+      return true;
     },
     watchTask() {
       return true;

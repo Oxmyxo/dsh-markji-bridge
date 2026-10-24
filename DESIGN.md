@@ -788,8 +788,9 @@ the network.
 - DSH job bridge tests (test/jobs.test.js): labels/progress/summary/outcome mapping; startSyncJob
   registers with the jobs service, seeds progress, mirrors later progress, appends the terminal
   summary and resolves the job with the task; markji_sync action=start returns job_id when
-  ctx.get('jobs') and exec.agent are present, reuses one job for the same session/task, and does
-  not require jobs when the service is unavailable.
+  ctx.get('jobs') and exec.agent are present, reuses one job for the same session/task, does
+  not require jobs when the service is unavailable, and does not create a job for a running task
+  owned by another DSH process (that job could never settle locally).
 - Cold load reads all v4 tables inside one SQLite transaction; refreshIfChanged combines file
   size/mtime with PRAGMA data_version so same-millisecond foreign commits are not missed.
 - Plain-text tests (test/plain-text.test.js): formatting tags keep visible text; media, data URIs

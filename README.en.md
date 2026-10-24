@@ -421,7 +421,7 @@ Common issues:
 
 | Environment | Result |
 | --- | --- |
-| Windows + Node 25.2.1 | 2.1.0: unit 103/103, E2E 13/13, entry smoke 4 tools. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x; the 2.1.0 DSH background-job integration was also exercised in a live DSH. |
+| Windows + Node 25.2.1 | 2.1.0: unit 104/104, E2E 13/13, entry smoke 4 tools. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x; the 2.1.0 DSH background-job integration was also exercised in a live DSH. |
 | WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Last verified on 1.6.0: unit 97/97, E2E 13/13, entry smoke 19 tools; 2.0.0 has not been re-run in WSL. |
 | macOS | Not tested on real hardware; the code uses only Node built-in modules and should work. |
 
@@ -434,7 +434,7 @@ The WSL verification ran the repository's tests and entry smoke check directly i
 Node >= 22.13 is required. Run from the repository source:
 
 ```bash
-node --test "test/*.test.js"   # unit / integration tests (103)
+node --test "test/*.test.js"   # unit / integration tests (104)
 node test/e2e-mock.mjs         # mock-server end-to-end (13)
 node test/index-smoke.mjs      # entry smoke test (4 tools)
 ```
