@@ -1,7 +1,7 @@
 {
   "name": "dsh-markji-bridge",
-  "version": "2.3.0",
-  "description": "Give a DSH agent Markji (maimemo) cards through four consolidated tools: decks and chapters, card reads/writes/syntax/archive/move, sync/state/failures/conflict resolution, and uncached file upload/query. Local SQLite cache with inline content, formatting-insensitive plain-text search with substring / fuzzy / regex modes, queued batch edits (including cross-chapter / cross-deck creation), raw Markji syntax validation and media preflight, remote-deletion detection, background sync with crash-resume, 3-way merge and conflict recovery.",
+  "version": "2.4.0",
+  "description": "Give a DSH agent Markji (maimemo) cards through four consolidated tools: decks and chapters, card reads/writes/syntax/archive/move, sync/state/failures/conflict resolution, and uncached file upload/query. Local SQLite cache with inline content, unified list filters with substring / fuzzy / regex / structured-predicate modes and all/deck/chapter scopes, queued batch edits (including cross-chapter / cross-deck creation), raw Markji syntax validation and media preflight, remote-deletion detection, background sync with crash-resume, 3-way merge and conflict recovery.",
   "type": "module",
   "license": "MIT",
   "repository": {

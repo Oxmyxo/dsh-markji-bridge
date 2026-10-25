@@ -84,10 +84,10 @@ test('search and card views use plain text, not base64 or formatting tags', asyn
   await engine.ready();
   try {
     for (const query of ['base64', 'iVBORw0', 'T#B#', 'Pic#ID']) {
-      assert.equal((await engine.searchCards({ query })).total, 0, 'query must not match media/markup: ' + query);
+      assert.equal((await engine.listCards({ query })).total, 0, 'query must not match media/markup: ' + query);
       assert.equal((await engine.listCards({ query })).total, 0, 'listCards must not match media/markup: ' + query);
     }
-    const hit = await engine.searchCards({ query: '关键词' });
+    const hit = await engine.listCards({ query: '关键词' });
     assert.equal(hit.total, 1);
     assert.equal(hit.cards[0].id, 'k1');
     assert.doesNotMatch(hit.cards[0].snippet, /base64|T#B#|Pic#ID/);

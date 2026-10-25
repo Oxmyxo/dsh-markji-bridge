@@ -175,7 +175,7 @@ test('a started sync task waits for the writer lock instead of failing', async (
     let sawWaiting = false;
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const status = await fixture.engine.syncTaskStatus({ task_id: task.task_id });
-      if (status.tasks[0].stage === 'waiting_lock') {
+      if (status.task.stage === 'waiting_lock') {
         sawWaiting = true;
         break;
       }
@@ -249,7 +249,7 @@ test('a second engine start keeps a live task owned by another process', async (
     // running task as a crashed task.
     await b.engine.start();
     const seen = await b.engine.syncTaskStatus({ task_id: task.task_id });
-    assert.equal(seen.tasks[0].status, 'running');
+    assert.equal(seen.task.status, 'running');
 
     const duplicate = await b.engine.startSync({ mode: 'pull' });
     assert.equal(duplicate.already_running, true);

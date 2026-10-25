@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Markji Bridge",
-    "description": "Four action-based agent tools for Markji decks, chapters, cards, sync, conflicts and files: a single-file SQLite cache, plain-text search that ignores formatting, media and base64, queued batch edits, chapter detail/create/rename/sort, card archive, failure/conflict recovery, multi-process write locking, background sync tasks with progress and crash-resume, and file upload."
+    "description": "Four action-based agent tools for Markji decks, chapters, cards, sync, conflicts and files: a single-file SQLite cache, plain-text and structured-predicate filtering (all/deck/chapter) that ignores formatting, media and base64, queued batch edits, chapter detail/create/rename/sort, card archive, failure/conflict recovery, multi-process write locking, background sync tasks with progress and crash-resume, and file upload."
   }
 }

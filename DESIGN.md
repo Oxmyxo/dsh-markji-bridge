@@ -37,10 +37,11 @@ lib/plain-text.js | Lead | rich-text -> searchable plain text (memoized, version
 lib/card-syntax.js | tools-layer | raw Markji syntax validator (no compiler or editor)
 test/card-syntax.test.js | tools-layer | raw syntax validation and media extraction tests
 lib/store.js | cache-sync | cache persistence (schema v4: cards.text)
-lib/sync.js | cache-sync | pull/merge/push engine, plain-text search/views
+lib/sync.js | cache-sync | pull/merge/push engine, unified list filters/views
 lib/search.js | cache-sync | substring / fuzzy / regex query matcher (pure, no cache access)
+lib/predicate.js | cache-sync | safe JSON predicate compiler (conditions, all/any/not, field allow-list)
 lib/jobs.js | cache-sync | bridge a sync task to a DSH background job (progress, settle, cancel)
-test/sync-task.test.js, test/jobs.test.js, test/search.test.js, test/tool-search.test.js, test/verify/*.test.js | cache-sync / tools-layer / verifier | task, job bridge, search + store/merge/push tests
+test/sync-task.test.js, test/jobs.test.js, test/search.test.js, test/predicate.test.js, test/list-filter.test.js, test/tool-search.test.js, test/verify/*.test.js | cache-sync / tools-layer / verifier | task, job bridge, filters + store/merge/push tests
 index.js, lib/tools.js, package.json, cordis.patch.yml, locale/*.json, icon.svg | tools-layer | entry + tools + manifest
 test/e2e-mock.mjs, test/mock-server.mjs | Lead | HTTP mock end-to-end
 test/verify/** | verifier | independent checks
@@ -338,11 +339,13 @@ Local id format: local_ + 12 lowercase hex chars, generated with node:crypto ran
     //   start(): Promise<void>,             // load cache + start auto-sync timer if config.autoSync
     //   stop(): Promise<void>,              // clear timer, flush store
     //   status(): object,
-    //   listDecks({ refresh, folder_id } = {}): Promise<object>,
-    //   listChapters({ deck, refresh } = {}): Promise<object>,
-    //   listCards({ deck, chapter, query, query_mode, regex_flags, min_score, limit, offset } = {}): Promise<object>,
-    //   searchCards({ query, query_mode, regex_flags, min_score, deck, deck_name, chapter, chapter_name,
-    //                 updated_after, updated_before, limit, offset, refresh } = {}): Promise<object>,
+    //   listDecks({ refresh, folder_id, scope, query, query_mode, predicate, fields,
+    //               regex_flags, min_score } = {}): Promise<object>,
+    //   listChapters({ deck, refresh, scope, query, query_mode, predicate, fields,
+    //                  regex_flags, min_score } = {}): Promise<object>,
+    //   listCards({ scope, deck, chapter, query, query_mode, predicate, fields, regex_flags,
+    //               min_score, deck_name, chapter_name, updated_after, updated_before,
+    //               limit, offset, refresh } = {}): Promise<object>,
     //   getCard({ card, deck } = {}): Promise<object>,
     //   getCards({ cards } = {}): Promise<{ cards, missing? }>,
     //   createCard({ deck, chapter, content, order, grammar_version }): Promise<object>,
@@ -356,7 +359,7 @@ Local id format: local_ + 12 lowercase hex chars, generated with node:crypto ran
     //   pull({ full = false, reason } = {}): Promise<PullReport>,
     //   push({ reason } = {}): Promise<PushReport>,
     //   startSync({ mode = 'auto', full = false, resume = null } = {}): Promise<{ task: SyncTask, already_running?: true }>,
-    //   syncTaskStatus({ task_id } = {}): { active: SyncTask|null, tasks: SyncTask[] },
+    //   syncTaskStatus({ task_id } = {}): { task: SyncTask } | { active: SyncTask|null, tasks: SyncTask[] },
     //   waitForTask(task_id, timeoutMs): Promise<SyncTask|null>,   // internal/tests
     //   hasPending(): boolean,
     //   ensureFresh(maxAgeMs): Promise<void>,
@@ -551,7 +554,7 @@ Rules:
 Tools:
 
     markji_sync action=start    { mode?, full?, resume? } -> { task: SyncTask, job_id?, already_running? }  (no wait)
-    markji_sync action=progress { task_id? }              -> { active: SyncTask|null, tasks: SyncTask[] }  // newest 3
+    markji_sync action=progress { task_id? }              -> { task: SyncTask } with task_id; otherwise { active: SyncTask|null, tasks: SyncTask[] }  // newest 3
 
 ### DSH background-job bridge
 
@@ -577,6 +580,27 @@ notification. It is optional at runtime:
   Disposing an owning session cancels its job and waits for the done promise.
 - markji_sync action=progress remains the durable, DSH-independent inspection API.
 
+### List filter pipeline
+
+compileListFilter(args, tool, { textFields, defaultFields, predicateFields }) is the only
+entry point for list filtering. It validates query_mode against FILTER_MODES, trims query,
+compiles predicate with compilePredicate(tree, { fields: predicateFields }), rejects
+query_mode=predicate without predicate or with query, validates fields, and builds one
+createSearchMatcher (lib/search.js) reused for every row. filterRows calls filter.match(values)
+for each row, lets applySearchHit add score/matched_by/snippet, and sorts fuzzy results by score
+then natural order. Card-specific deck_name/chapter_name/updated_after/updated_before filters
+run before the shared filter; partial fuzzy fallback runs only when no card matched and fields
+includes text, and its entries are re-checked against the predicate.
+
+lib/predicate.js compiles a JSON tree, never JavaScript. A condition is
+{ field, op, value, case_sensitive?, flags? }; groups are { all }, { any }, { not }; ops are
+eq/ne/contains/starts_with/ends_with/regex/in/not_in/gt/gte/lt/lte/exists. readPath walks own
+properties only (no prototype access). Field roots are checked against the per-list allow-list,
+and forbidden path segments (__proto__, prototype, constructor) are rejected at compile time.
+String comparisons are case-insensitive by default (case_sensitive opts out), numbers compare
+numerically, and gt/gte/lt/lte fall back to string ordering for ISO timestamps. Limits: depth 8,
+64 nodes; invalid trees reject as invalid_argument before any row is evaluated.
+
 ### Read/lazy behavior
 
 - Every public method calls touch() first.
@@ -589,49 +613,48 @@ notification. It is optional at runtime:
   account takes minutes and a typo id must fail fast), retry, then throw MarkjiError
   (unknown_deck|unknown_chapter|unknown_card) with a hint to run markji_sync mode=pull
   full=true when the entity may exist on another device.
-- listDecks -> { folders: [{ id, name, deck_count, parent_id? }], decks: [DeckView], total }.
-  Folder items are no longer returned; DeckView.folder_id maps a deck to its folder.
+- Every list action (listDecks / listChapters / listCards) shares compileListFilter:
+  scope, query, query_mode, predicate, fields, regex_flags, min_score. FILTER_MODES =
+  substring (default) / fuzzy / regex / predicate. query and predicate AND together;
+  query_mode=predicate requires predicate and rejects query. scope is inferred from
+  deck / chapter / folder_id when omitted; an explicit conflict (scope=all with a target, or
+  scope=deck without a deck) rejects with invalid_argument. fields must be a non-empty subset
+  of the action's text fields. All filters run in memory over the loaded cache.
+- listDecks -> { folders: [{ id, name, deck_count, parent_id? }], decks: [DeckView], total,
+  hint? }. Folder items are no longer returned; DeckView.folder_id maps a deck to its folder
+  and only DECK-kind folder items are counted. scope=all|folder (folder requires folder_id);
+  query fields default name/description/id; predicate fields are DECK_PREDICATE_FIELDS.
   DeckView = { id, name, card_count, chapter_count, folder_id?, is_private?, source?,
   status?, missing?, description?, updated_time? }; description/updated_time only in getDeck,
   and default-valued flags are omitted.
-- listChapters({deck}) -> { deck_id, deck_name, chapters: [ChapterView] }; without
-  deck -> { decks: [{ deck_id, deck_name, chapters: [ChapterView] }] }.
-  ChapterView = { id, name, card_count, pending?, local?, missing? }; getChapter/chapter_get
-  (detail=true) adds revision, order and updated_time.
-- listCards -> { total, offset, limit, has_more, cards: [CardSummary],
-  partial?, fallback_terms?, hint? }, filtered by
-  deck and/or chapter; query is matched over the derived plain text (see lib/plain-text.js;
-  also the card id), with query_mode selecting substring (default), fuzzy, or regex (see
-  lib/search.js). Fuzzy matches add score and matched_by, and sort best-first; regex matches add
-  matched_by. If a fuzzy query has 3+ whitespace terms and no card matches all of them, it
-  falls back to partial matches: result.partial = true, up to three rarest present terms become
-  result.fallback_terms anchors, cards matching an anchor are ranked by anchor count then rarity,
-  each card gets matched_terms, and result.hint explains the fallback. A zero-result query gets
-  a hint suggesting a shorter phrase or regex alternative. Default limit 50, max 200.
+- listChapters({deck}) -> { deck_id, deck_name, chapters: [ChapterView], total, hint? };
+  without deck -> { decks: [{ deck_id, deck_name, chapters: [ChapterView] }], total, hint? }.
+  scope=all|deck (deck requires deck); query fields default name/deck_name/id; predicate fields
+  are CHAPTER_PREDICATE_FIELDS. With a filter active, deck groups with no matching chapters are
+  omitted. ChapterView = { id, name, card_count, pending?, local?, missing? };
+  getChapter/chapter_get (detail=true) adds revision, order and updated_time.
+- listCards -> { total, offset, limit, has_more, cards: [CardSummary], partial?,
+  fallback_terms?, hint? }. scope=all|deck|chapter (deck requires deck, chapter requires
+  chapter; a supplied deck+chapter must agree). deck_name/chapter_name are case-insensitive
+  substrings; updated_after/updated_before accept ISO 8601 or epoch milliseconds (numbers or
+  numeric strings) and compare cloud.updated_time with the local updated_time fallback,
+  inclusive; invalid or reversed times reject. limit 1-200 (default 50), offset >= 0.
+  query fields default CARD_TEXT_FIELDS = text/id/deck_name/chapter_name; predicate fields are
+  CARD_PREDICATE_FIELDS (including status, revision, updated_time, content, cloud, etc.).
+  query_mode substring is a case-insensitive substring; fuzzy adds score and matched_by and
+  sorts best-first (min_score threshold, default 0.6); regex is a JavaScript RegExp over the
+  field (regex_flags i/m/s/u, default i) and adds matched_by. Formatting tags, media
+  references, data URIs and base64 are excluded from text. If a fuzzy query has 3+ whitespace
+  terms and no card matches all of them, it falls back to partial matches: result.partial =
+  true, up to three rarest present terms become result.fallback_terms anchors, cards matching
+  an anchor are ranked by anchor count then rarity, each card gets matched_terms, and
+  result.hint explains the fallback. The fallback only runs when fields includes text, and any
+  predicate is applied to fallback entries too. A zero-result query gets a hint suggesting a
+  shorter phrase or regex alternative; a zero-result predicate gets its own hint. snippet is
+  centred on the first text match. refresh=true forces a pull (otherwise the pull TTL applies).
   CardSummary = { id, deck_name, chapter_name, snippet, status? } plus optional score /
   matched_by / matched_terms. status is present only when it is dirty, new or conflict;
   revision, ids and updated_time are available through getCard.
-- searchCards -> { total, offset, limit, has_more, cards: [CardSummary],
-  partial?, fallback_terms?, hint? }; the normalized filter values are not echoed.
-  All filters AND together and run in memory over the loaded cache: query is matched by
-  query_mode = substring (default, case-insensitive substring of the derived plain text and
-  card id), fuzzy (approximate plain-text match with score, tolerating small edits; min_score
-  threshold, default 0.6; sorted best-first), or regex (JavaScript RegExp over plain text and
-  card id; regex_flags i/m/s/u, default i). Fuzzy compares one phrase: when the query has
-  whitespace-separated terms, every term must match approximately and the score averages the
-  terms, so a long concept list does not pass on a single exact word. Formatting tags, media
-  references, data URIs and base64 are excluded. If a fuzzy query has 3+ whitespace terms and
-  no card matches all of them, it falls back to partial matches: result.partial = true, the
-  three rarest present terms become result.fallback_terms anchors, cards matching an anchor are
-  ranked by anchor count then rarity, each card gets matched_terms, and result.hint explains
-  the fallback. A zero-result query gets a hint suggesting a shorter phrase or regex alternative.
-  deck/deck_name and chapter/chapter_name are exact
-  id or case-insensitive name substring; updated_after/updated_before accept ISO 8601 or epoch
-  milliseconds (numbers or numeric strings) and compare cloud.updated_time with the local
-  updated_time as fallback, inclusive. limit 1-100 (default 20), offset >= 0; invalid or
-  reversed times reject with invalid_argument; invalid query_mode / regex_flags / min_score
-  reject with invalid_argument; unknown deck/chapter ids reject. snippet is centred on the
-  first content match. refresh=true forces a pull (otherwise the pull TTL applies).
 - getCard -> { card: { id, deck_id, deck_name, chapter_id, chapter_name, content, text,
   grammar_version, status, cloud: {revision, updated_time} | null, pending?,
   conflict: ConflictView|null, last_error?, created_time, updated_time } }. content is the rich
@@ -705,15 +728,14 @@ content, and there is no editor or compiler in this plugin.
 - Tool names/args (exact; four action-based tools):
 
 tool | action | args | returns
-markji_decks | list (default) | { refresh?, folder_id? } | engine.listDecks
+markji_decks | list (default) | { refresh?, folder_id?, scope?, query?, query_mode?, predicate?, fields?, regex_flags?, min_score? } | engine.listDecks
 markji_decks | get | { deck, refresh? } | engine.getDeck (deck detail + chapters)
-markji_decks | chapter_list | { deck?, refresh? } | engine.listChapters
+markji_decks | chapter_list | { deck?, refresh?, scope?, query?, query_mode?, predicate?, fields?, regex_flags?, min_score? } | engine.listChapters
 markji_decks | chapter_get | { chapter, deck?, with_cards?, refresh? } | engine.getChapter (chapter detail + optional card summaries)
 markji_decks | chapter_create | { deck, name, order? } | engine.editChapter({ action:'create' })
 markji_decks | chapter_rename | { chapter, name, deck? } | engine.editChapter({ action:'rename' })
 markji_decks | chapter_sort | { deck, chapter_ids } | engine.editChapter({ action:'sort' })
-markji_cards | list (default) | { deck?, chapter?, query?, query_mode?, regex_flags?, min_score?, limit?, offset? } | engine.listCards
-markji_cards | search | { query?, query_mode?, regex_flags?, min_score?, deck?, deck_name?, chapter?, chapter_name?, updated_after?, updated_before?, limit?, offset?, refresh? } | engine.searchCards
+markji_cards | list (default) | { scope?, deck?, chapter?, query?, query_mode?, predicate?, fields?, regex_flags?, min_score?, deck_name?, chapter_name?, updated_after?, updated_before?, limit?, offset?, refresh? } | engine.listCards
 markji_cards | get | { card?, cards?: string[], include_text? } | engine.getCards (per-id ok/error, one refresh on miss)
 markji_cards | create | { deck?, chapter?, new_cards: [{content, deck?, chapter?, order?, grammar_version?}] } | engine.createCard per item (top-level targets are defaults; batch result)
 markji_cards | update | { card, content, grammar_version? } or { updates: [{card, content, grammar_version?}] } | engine.updateCard per item (batch result)
@@ -722,7 +744,7 @@ markji_cards | archive | { cards: string[] } | engine.archiveCards (archive chap
 markji_cards | validate | { content? or contents? or cards?: string[] } | validateCardContent per item (batch result)
 markji_cards | syntax_help | { format? } | getSyntaxHelp
 markji_sync | start (default) | { mode?: 'auto'|'pull'|'push', full?: bool, resume?: string } | engine.startSync (returns { task, already_running? } immediately)
-markji_sync | progress | { task_id?: string } | engine.syncTaskStatus (progress/history, no network)
+markji_sync | progress | { task_id?: string } | engine.syncTaskStatus ({task} with task_id, otherwise {active,tasks}; no network)
 markji_sync | state | {} | engine.status
 markji_sync | failures | { card?, deck?, limit? } | engine.failures (conflicts, failed cards, recovery)
 markji_sync | resolve | { id, strategy: 'keep_local'|'keep_remote'|'use_content', content? } | engine.resolveConflict
@@ -809,7 +831,7 @@ bounded limit, and never touches the network.
   'running' task with a provably dead owner is marked 'interrupted' by a new engine on the same
   dataDir and is resumable through the same handle; a resumed pull adopts already-created local
   cards/chapters instead of duplicating them; completion stores report and syncTaskStatus returns
-  history; watchTaskProgress emits live views and watchTask emits exactly one terminal view;
+  {task} for one task_id or {active,tasks} otherwise; watchTaskProgress emits live views and watchTask emits exactly one terminal view;
   cancelTask interrupts a running task at a checkpoint and leaves it resumable.
 - DSH job bridge tests (test/jobs.test.js): labels/progress/summary/outcome mapping; startSyncJob
   registers with the jobs service, seeds progress, mirrors later progress, appends the terminal
@@ -819,18 +841,23 @@ bounded limit, and never touches the network.
   owned by another DSH process (that job could never settle locally).
 - Cold load reads all v4 tables inside one SQLite transaction; refreshIfChanged combines file
   size/mtime with PRAGMA data_version so same-millisecond foreign commits are not missed.
-- Search tests (test/search.test.js, test/tool-search.test.js): substring stays the default;
-  fuzzy tolerates a one-character typo, adds score/matched_by, honors min_score, sorts
-  best-first, ANDs all space-separated terms, does not pass a multi-term query on partial
-  character overlap, falls back to rare-term-anchored partial matches with fallback_terms and
-  matched_terms for 3+ terms when no card matches all, and returns a hint when a long query
-  matches nothing; regex honors default i and
-  explicit m, matches by id, rejects invalid patterns and flags; listCards accepts the
-  same query options and returns the zero-result hint; the markji_cards tool forwards
-  query_mode, regex_flags and min_score and rejects invalid values.
+- Filter tests (test/search.test.js, test/predicate.test.js, test/list-filter.test.js,
+  test/tool-search.test.js): substring stays the default; fuzzy tolerates a one-character typo,
+  adds score/matched_by, honors min_score, sorts best-first, ANDs all space-separated terms,
+  does not pass a multi-term query on partial character overlap, falls back to
+  rare-term-anchored partial matches with fallback_terms and matched_terms for 3+ terms when no
+  card matches all, and returns a hint when a long query matches nothing; regex honors default
+  i and explicit m, matches by id, rejects invalid patterns and flags; predicate covers all 13
+  ops, all/any/not groups, dot paths, nested own-property reads, case sensitivity, depth/node
+  limits, forbidden keys and invalid trees; listCards supports scope=all/deck/chapter with
+  inferred and explicit conflicts, fields, predicate-only queries, predicate+query AND, and
+  the partial fallback; listDecks/listChapters support query, fuzzy, predicate, scope and
+  hints; the markji_cards tool merges query/query_mode/predicate/fields/scope into list,
+  forwards regex_flags and min_score, and rejects invalid values, action=search and invalid
+  query modes.
 - Plain-text tests (test/plain-text.test.js): formatting tags keep visible text; media, data URIs
   and long bare base64 runs are dropped; markup must not be mistaken for Markdown links
-  (str.[T#B#find](sub) -> str.find(sub)); search/listCards/snippets never match base64 or
+  (str.[T#B#find](sub) -> str.find(sub)); listCards filters/snippets never match base64 or
   "[T#B#"/"Pic#ID"; card_get returns both rich content and plain text; a hand-built v3 cache is
   migrated to v4 with cards.text backfilled; the data JSON never contains text.
 - Batch tests (test/batch.test.js): multi-id get preserves order and isolates unknown ids;
@@ -852,8 +879,8 @@ bounded limit, and never touches the network.
 2. Bundle installs via plugin_manager install_bundle with application: applied and no
    warnings that affect loading; the 4 markji_* tools are visible to the agent.
 3. Live read-only check with the real token: markji_decks action=list lists the real decks;
-   markji_decks action=get / chapter_get and markji_cards action=list/search/get work on a real
-   deck, including search with query_mode=fuzzy and query_mode=regex; cache.db appears under the
+   markji_decks action=get / chapter_get and markji_cards action=list/get work on a real
+   deck, including list filters with query_mode=fuzzy/regex and predicate; cache.db appears under the
    data dir.
 4. Mock HTTP end-to-end (test/e2e-mock.mjs) proves create/update/move/chapter writes,
    pull-before-push, remote-change merge, conflict recording without aborting other cards,

@@ -105,8 +105,9 @@ test('startSync returns a handle immediately and reports progress', async () => 
     assert.equal(second.task.task_id, first.task.task_id, 'same running task is returned');
 
     const progress = await engine.syncTaskStatus({ task_id: first.task.task_id });
-    assert.ok(progress.active, 'active task exposed');
-    assert.equal(progress.tasks[0].status, 'running', 'still running while the delayed pull is in flight');
+    assert.equal(progress.task.task_id, first.task.task_id, 'task_id selects one task');
+    assert.equal(progress.task.status, 'running', 'still running while the delayed pull is in flight');
+    assert.equal(progress.tasks, undefined, 'single-task progress does not return history');
 
     const done = await engine.waitForTask(first.task.task_id, 20000);
     assert.equal(done.status, 'completed', 'task completes: ' + JSON.stringify(done.error));
@@ -155,10 +156,9 @@ test('a task left running by a dead host becomes interrupted and resumes', async
     const b = makeEngine(dir, mock);
     await b.engine.start();
     const recovered = await b.engine.syncTaskStatus({ task_id: taskId });
-    assert.equal(recovered.tasks[0].status, 'interrupted', 'reload marks the task interrupted');
-    assert.equal(recovered.tasks[0].error.code, 'interrupted');
-    assert.match(recovered.tasks[0].hint, /resume/);
-    assert.equal(recovered.active, null, 'nothing is running after recovery');
+    assert.equal(recovered.task.status, 'interrupted', 'reload marks the task interrupted');
+    assert.equal(recovered.task.error.code, 'interrupted');
+    assert.match(recovered.task.hint, /resume/);
 
     const resumed = await b.engine.startSync({ resume: taskId });
     assert.equal(resumed.task.status, 'running');
@@ -215,7 +215,7 @@ test('resuming adopts cards the provider already created instead of duplicating 
     const b = makeEngine(dir, mock);
     await b.engine.start();
     const interrupted = await b.engine.syncTaskStatus({ task_id: taskId });
-    assert.equal(interrupted.tasks[0].status, 'interrupted');
+    assert.equal(interrupted.task.status, 'interrupted');
 
     const resumed = await b.engine.startSync({ resume: taskId });
     assert.equal(resumed.task.status, 'running');
