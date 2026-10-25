@@ -582,15 +582,18 @@ notification. It is optional at runtime:
 
 ### List filter pipeline
 
-compileListFilter(args, tool, { textFields, defaultFields, predicateFields }) is the only
-entry point for list filtering. It validates query_mode against FILTER_MODES, trims query,
-compiles predicate with compilePredicate(tree, { fields: predicateFields }), rejects
-query_mode=predicate without predicate or with query, validates fields, and builds one
-createSearchMatcher (lib/search.js) reused for every row. filterRows calls filter.match(values)
-for each row, lets applySearchHit add score/matched_by/snippet, and sorts fuzzy results by score
-then natural order. Card-specific deck_name/chapter_name/updated_after/updated_before filters
-run before the shared filter; partial fuzzy fallback runs only when no card matched and fields
-includes text, and its entries are re-checked against the predicate.
+Each list owns its filter: compileDeckFilter, compileChapterFilter and compileCardFilter
+call shared argument helpers (readFilterMode/readFilterQuery/readFilterPredicate/
+validateFilterShape/readFilterMatcher/matchTextFields) but keep independent mode arrays, text
+fields and predicate allow-lists. They trim query, compile predicate with
+compilePredicate(tree, { fields: <list fields> }), reject query_mode=predicate without predicate
+or with query, validate fields, and build one createSearchMatcher (lib/search.js) reused for
+every row. filterRows calls filter.matches(values) for each row, lets applySearchHit add
+score/matched_by/snippet, and sorts fuzzy results by score then natural order. Unsupported
+fields or ops fail with invalid_argument; they are never matched against another resource.
+Card-specific deck_name/chapter_name/updated_after/updated_before filters run before the card
+filter; partial fuzzy fallback runs only when no card matched and fields includes text, and its
+entries are re-checked against the predicate.
 
 lib/predicate.js compiles a JSON tree, never JavaScript. A condition is
 { field, op, value, case_sensitive?, flags? }; groups are { all }, { any }, { not }; ops are
@@ -613,13 +616,14 @@ numerically, and gt/gte/lt/lte fall back to string ordering for ISO timestamps. 
   account takes minutes and a typo id must fail fast), retry, then throw MarkjiError
   (unknown_deck|unknown_chapter|unknown_card) with a hint to run markji_sync mode=pull
   full=true when the entity may exist on another device.
-- Every list action (listDecks / listChapters / listCards) shares compileListFilter:
-  scope, query, query_mode, predicate, fields, regex_flags, min_score. FILTER_MODES =
-  substring (default) / fuzzy / regex / predicate. query and predicate AND together;
-  query_mode=predicate requires predicate and rejects query. scope is inferred from
-  deck / chapter / folder_id when omitted; an explicit conflict (scope=all with a target, or
-  scope=deck without a deck) rejects with invalid_argument. fields must be a non-empty subset
-  of the action's text fields. All filters run in memory over the loaded cache.
+- Every list action (listDecks / listChapters / listCards) accepts the same interface:
+  scope, query, query_mode, predicate, fields, regex_flags, min_score. Mode arrays and field
+  sets are per-list (DECK_FILTER_MODES/CHAPTER_FILTER_MODES/CARD_FILTER_MODES, DECK_*_FIELDS,
+  CHAPTER_*_FIELDS, CARD_*_FIELDS). query and predicate AND together; query_mode=predicate
+  requires predicate and rejects query. scope is inferred from deck / chapter / folder_id when
+  omitted; an explicit conflict (scope=all with a target, or scope=deck without a deck) rejects
+  with invalid_argument. fields must be a non-empty subset of that list's text fields. All
+  filters run in memory over the loaded cache.
 - listDecks -> { folders: [{ id, name, deck_count, parent_id? }], decks: [DeckView], total,
   hint? }. Folder items are no longer returned; DeckView.folder_id maps a deck to its folder
   and only DECK-kind folder items are counted. scope=all|folder (folder requires folder_id);
@@ -629,8 +633,9 @@ numerically, and gt/gte/lt/lte fall back to string ordering for ISO timestamps. 
   and default-valued flags are omitted.
 - listChapters({deck}) -> { deck_id, deck_name, chapters: [ChapterView], total, hint? };
   without deck -> { decks: [{ deck_id, deck_name, chapters: [ChapterView] }], total, hint? }.
-  scope=all|deck (deck requires deck); query fields default name/deck_name/id; predicate fields
-  are CHAPTER_PREDICATE_FIELDS. With a filter active, deck groups with no matching chapters are
+  scope=all|deck (deck requires deck); query fields default name/id; predicate fields are
+  CHAPTER_PREDICATE_FIELDS (chapter-only; no description or deck_name, use scope=deck for the
+  parent). With a filter active, deck groups with no matching chapters are
   omitted. ChapterView = { id, name, card_count, pending?, local?, missing? };
   getChapter/chapter_get (detail=true) adds revision, order and updated_time.
 - listCards -> { total, offset, limit, has_more, cards: [CardSummary], partial?,

@@ -11,10 +11,11 @@ Four action-based `markji_*` tools, implemented with Node.js built-in modules on
 ## Features
 
 - **Local cache**: one SQLite file, `cache.db`, stores indexes, card bodies, the pending queue, conflicts, and sync tasks. Routine searches and reads do not call the API.
-- **Unified list filtering (search is a filter)**: card `list`, deck `list`, and `chapter_list` share one filter parameter set; there is no separate `search` action:
+- **Unified list filtering (search is a filter)**: card `list`, deck `list`, and `chapter_list` share the same filter parameter set, each with its own fields; there is no separate `search` action:
   - `query` + `query_mode`: `substring` (default), `fuzzy` (approximate matches that tolerate small typos and sort by score), `regex` (JavaScript regular expression; `regex_flags` accepts `imsu`, default `i`), or `predicate` (structured condition tree).
   - `scope`: cards accept `all` / `deck` / `chapter`, chapters accept `all` / `deck`, and decks accept `all` / `folder`. When omitted it is inferred from `deck` / `chapter` / `folder_id`; an explicit conflict is an error.
-  - `fields`: the fields `query` matches. Cards default to `text` / `id` / `deck_name` / `chapter_name`, decks to `name` / `description` / `id`, and chapters to `name` / `deck_name` / `id`.
+  - `fields`: the fields `query` matches. Cards default to `text` / `id` / `deck_name` / `chapter_name`, decks to `name` / `description` / `id`, and chapters to `name` / `id`.
+  - Each list owns its field set: decks only accept deck fields (`name` / `description` / `id`, times, counts, and so on), chapters only accept chapter fields (there is no `description` and no `deck_name`; use `scope=deck` to narrow by parent deck), and cards keep the wider set (`text` / `content` / `cloud` / `status`, and so on). Fields or ops that do not belong to that list fail with `invalid_argument`; they are never matched across resources.
   - `predicate`: a JSON condition tree, never JavaScript. A condition is `{ field, op, value, case_sensitive?, flags? }`; groups are `{ all: [...] }` / `{ any: [...] }` / `{ not: {...} }`; ops are `eq`, `ne`, `contains`, `starts_with`, `ends_with`, `regex`, `in`, `not_in`, `gt`, `gte`, `lt`, `lte`, and `exists`. `predicate` ANDs with `query`; `query_mode=predicate` requires `predicate` and rejects `query`. Conditions read own properties only, with a maximum depth of 8 and at most 64 nodes.
 - **Plain-text matching**: each card also stores a plain-text column with formatting markers, image/audio markers, data URIs, and base64 removed, so the `text` field stays clean and readable. `min_score` tunes the fuzzy threshold. Keep `query` to one short phrase (usually 1-3 words): fuzzy compares the whole query, and space-separated terms must all match approximately. If 3+ terms match no card fully, fuzzy picks the rarest query terms as anchors and falls back to partial matches with `partial: true`, `fallback_terms`, and per-card `matched_terms`, plus a `hint`. Do not paste a list of concepts as a query.
 - **Safe writes**: edits are queued; before pushing, remote changes are pulled and three-way merged, so stale data never overwrites the cloud. Conflicts are deduplicated per card and can be resolved individually.
@@ -245,7 +246,9 @@ Without `dsh-tool-jobs`, or when the call does not come from a session, no `job_
 
 - Cards: `id`, `deck_id`, `deck_name`, `chapter_id`, `chapter_name`, `text`, `content`, `snippet`, `status`, `grammar_version`, `revision`, `updated_time`, `created_time`, `local`, `pending`, `conflict`, `last_error`, `cloud` (for example `cloud.revision`).
 - Decks: `id`, `name`, `description`, `folder_id`, `card_count`, `chapter_count`, `is_private`, `source`, `status`, `missing`, `created_time`, `updated_time`.
-- Chapters: `id`, `deck_id`, `deck_name`, `name`, `card_count`, `order`, `revision`, `local`, `pending`, `missing`, `updated_time`.
+- Chapters: `id`, `deck_id`, `name`, `card_count`, `order`, `revision`, `local`, `pending`, `missing`, `updated_time` (no `description`, no `deck_name`).
+
+Each list maintains its field set independently. For example, passing `description` / `deck_name` to chapters, or `text` / `content` to decks, fails with `invalid_argument` instead of being silently ignored.
 
 String comparisons are case-insensitive by default (`case_sensitive: true` turns that off); numbers compare numerically; ISO times compare as strings (correct order for one timezone offset); unknown fields or ops and trees beyond the depth / node limits fail with `invalid_argument`.
 
@@ -457,20 +460,20 @@ Common issues:
 
 | Environment | Result |
 | --- | --- |
-| Windows + Node 25.2.1 | 2.4.0: unit 113/113, E2E 13/13, entry smoke 4 tools; unified list filters, `predicate`, and `progress task_id` were checked against a real-cache copy and in a live DSH. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x; the 2.1.0 DSH background-job integration and 2.2.0 fuzzy / regex search were also exercised in a live DSH. |
+| Windows + Node 25.2.1 | 2.4.0: unit 114/114, E2E 13/13, entry smoke 4 tools; unified list filters, `predicate`, and `progress task_id` were checked against a real-cache copy and in a live DSH. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x; the 2.1.0 DSH background-job integration and 2.2.0 fuzzy / regex search were also exercised in a live DSH. |
 | WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Last verified on 1.6.0: unit 97/97, E2E 13/13, entry smoke 19 tools; 2.0.0 has not been re-run in WSL. |
 | macOS | Not tested on real hardware; the code uses only Node built-in modules and should work. |
 
 The WSL verification ran the repository's tests and entry smoke check directly in Linux; it did not install a second DSH inside WSL. To actually use the plugin under WSL, DSH itself should also run in that distribution.
 
-2.0.0 consolidates the 19 fine-grained tools into four action-based tools and adds deck detail, chapter detail, and `with_cards`; chapter create / rename / sort reuse the existing engine. 2.1.0 connects sync tasks to DSH's native background-job mechanism instead of sending a plugin-specific completion message. 2.2.0 adds `fuzzy` approximate matching and `regex` regular-expression queries to card search while keeping the default `substring` behavior. 2.3.0 compacts list, search, read, and sync return values by removing repeated environment data, empty fields, and per-item wrappers. 2.4.0 merges search into list filtering: unified substring / fuzzy / regex / predicate modes, all / deck / chapter scopes, `fields` and `predicate`, plus single-task `progress` by `task_id`. These paths are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
+2.0.0 consolidates the 19 fine-grained tools into four action-based tools and adds deck detail, chapter detail, and `with_cards`; chapter create / rename / sort reuse the existing engine. 2.1.0 connects sync tasks to DSH's native background-job mechanism instead of sending a plugin-specific completion message. 2.2.0 adds `fuzzy` approximate matching and `regex` regular-expression queries to card search while keeping the default `substring` behavior. 2.3.0 compacts list, search, read, and sync return values by removing repeated environment data, empty fields, and per-item wrappers. 2.4.0 merges search into list filtering: unified substring / fuzzy / regex / predicate modes, all / deck / chapter scopes, `fields` and `predicate`, plus single-task `progress` by `task_id`. Each list keeps its own field set and accepts only its own resource fields. These paths are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
 
 ## Development and testing
 
 Node >= 22.13 is required. Run from the repository source:
 
 ```bash
-node --test "test/*.test.js"   # unit / integration tests (113)
+node --test "test/*.test.js"   # unit / integration tests (114)
 node test/e2e-mock.mjs         # mock-server end-to-end (13)
 node test/index-smoke.mjs      # entry smoke test (4 tools)
 ```

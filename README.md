@@ -11,10 +11,11 @@
 ## 特性
 
 - **本地缓存**：单个 SQLite 文件 `cache.db`，索引、卡片正文、待推送队列、冲突和同步任务都在一个库里，日常搜索和阅读不请求 API。
-- **统一列表过滤（搜索即过滤）**：`markji_cards` 的 `list`、`markji_decks` 的 `list` / `chapter_list` 共用一组过滤参数，不再有单独的 `search` action：
+- **统一列表过滤（搜索即过滤）**：`markji_cards` 的 `list`、`markji_decks` 的 `list` / `chapter_list` 使用同一组过滤参数（字段集各自独立），不再有单独的 `search` action：
   - `query` + `query_mode`：`substring`（默认，子串）、`fuzzy`（近似匹配，容忍少量错字并按相似度排序）、`regex`（JavaScript 正则，`regex_flags` 可设 `imsu`，默认 `i`）或 `predicate`（结构化条件树）。
   - `scope`：卡片支持 `all` / `deck` / `chapter`，章节支持 `all` / `deck`，卡组支持 `all` / `folder`；不传时由 `deck` / `chapter` / `folder_id` 推断，显式冲突会报错。
-  - `fields`：指定 `query` 匹配哪些字段；卡片默认 `text` / `id` / `deck_name` / `chapter_name`，卡组默认 `name` / `description` / `id`，章节默认 `name` / `deck_name` / `id`。
+  - `fields`：指定 `query` 匹配哪些字段；卡片默认 `text` / `id` / `deck_name` / `chapter_name`，卡组默认 `name` / `description` / `id`，章节默认 `name` / `id`。
+  - 每个 list 的字段集独立：卡组只认卡组字段（`name` / `description` / `id`、更新时间、计数等），章节只认章节字段（没有 `description`，也不支持 `deck_name`，按父卡组筛选用 `scope=deck`），卡片保留更宽的条件（`text` / `content` / `cloud` / `status` 等）。不属于该 list 的字段或操作会报 `invalid_argument`，不会跨资源匹配。
   - `predicate`：JSON 条件树，不是 JS。条件为 `{ field, op, value, case_sensitive?, flags? }`，组合为 `{ all: [...] }` / `{ any: [...] }` / `{ not: {...} }`；op 支持 `eq`、`ne`、`contains`、`starts_with`、`ends_with`、`regex`、`in`、`not_in`、`gt`、`gte`、`lt`、`lte`、`exists`。`predicate` 可与 `query` 同时使用（AND）；`query_mode=predicate` 时必须提供 `predicate`，且不能同时给 `query`。条件只读自有属性，最大嵌套 8 层、最多 64 个节点。
 - **纯文本匹配**：每张卡另存一列去掉格式标记、图片 / 音频标记、data URI 和 base64 的纯文本，`text` 字段只含纯文本，结果干净可读。`fuzzy` 可用 `min_score` 调整阈值；`query` 只放一个短短语（通常 1-3 个词）：`fuzzy` 空格分词时要求各项都近似命中；若 3 个以上词没有任何卡片全命中，会自动取查询里更稀有的词作为锚点，退化为部分匹配：返回 `partial: true`、`fallback_terms` 和每张卡的 `matched_terms`，优先展示命中罕用词的卡片，并在 `hint` 中说明。不要把多个概念硬拼成一个 query。
 - **安全写入**：修改先排队，推送前先拉取远端变更并三方合并，不会用旧数据覆盖云端；冲突按卡片去重，可逐条解决。
@@ -245,7 +246,9 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 
 - 卡片：`id`、`deck_id`、`deck_name`、`chapter_id`、`chapter_name`、`text`、`content`、`snippet`、`status`、`grammar_version`、`revision`、`updated_time`、`created_time`、`local`、`pending`、`conflict`、`last_error`、`cloud`（可继续读 `cloud.revision` 等）。
 - 卡组：`id`、`name`、`description`、`folder_id`、`card_count`、`chapter_count`、`is_private`、`source`、`status`、`missing`、`created_time`、`updated_time`。
-- 章节：`id`、`deck_id`、`deck_name`、`name`、`card_count`、`order`、`revision`、`local`、`pending`、`missing`、`updated_time`。
+- 章节：`id`、`deck_id`、`name`、`card_count`、`order`、`revision`、`local`、`pending`、`missing`、`updated_time`（没有 `description` 和 `deck_name`）。
+
+各 list 的字段集按资源独立维护；例如给章节传 `description` / `deck_name`，或给卡组传 `text` / `content`，都会报 `invalid_argument`，不会被静默忽略。
 
 字符串比较默认大小写不敏感（`case_sensitive: true` 可关闭）；数字按数值比较；ISO 时间按字符串比较（同一时区偏移下顺序正确）；未知字段、未知 op、超过深度 / 节点限制都会以 `invalid_argument` 报错。
 
@@ -457,20 +460,20 @@ Failures = {
 
 | 环境 | 结果 |
 | --- | --- |
-| Windows + Node 25.2.1 | 2.4.0：单元 113/113，E2E 13/13，入口冒烟 4 个工具；统一列表过滤、`predicate` 与 `progress task_id` 已在真实缓存副本和真实 DSH 中联调。同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑曾在 1.x 真实账号实测；2.1.0 的 DSH 后台任务接入、2.2.0 的模糊 / 正则搜索也在真实 DSH 中验证过。 |
+| Windows + Node 25.2.1 | 2.4.0：单元 114/114，E2E 13/13，入口冒烟 4 个工具；统一列表过滤、`predicate` 与 `progress task_id` 已在真实缓存副本和真实 DSH 中联调。同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑曾在 1.x 真实账号实测；2.1.0 的 DSH 后台任务接入、2.2.0 的模糊 / 正则搜索也在真实 DSH 中验证过。 |
 | WSL2 Ubuntu 26.04（Linux 6.18，Node v22.22.1） | 最后一次验证在 1.6.0：单元 97/97，E2E 13/13，入口冒烟 19 个工具；2.0.0 尚未在 WSL 复跑。 |
 | macOS | 未实机测试；代码只用 Node 内置模块，理论上可用。 |
 
 WSL 验证是在 Linux 环境里直接跑仓库的测试和入口烟测，不是在 WSL 里另装一套 DSH。要在 WSL 里实际使用，DSH 本身也应运行在该发行版中。
 
-2.0.0 把 19 个细粒度工具合并为 4 个按 `action` 组织的工具，并新增卡组详情、章节详情与 `with_cards`；章节新建 / 重命名 / 排序沿用原有引擎。2.1.0 把同步任务接入 DSH 的原生后台任务机制，不再由插件自己发送完成消息。2.2.0 为卡片搜索增加 `fuzzy` 近似匹配与 `regex` 正则查询，并保留默认的 `substring` 行为。2.3.0 精简列表、搜索、读取和同步的返回值，去掉重复环境信息、空字段与逐项包装。2.4.0 把搜索合并进列表过滤：统一的子串 / 模糊 / 正则 / 谓词模式、全库 / 卡组 / 章节范围、`fields` 与 `predicate`，并让 `progress` 支持按 `task_id` 只取单个任务。以上由本地单元、入口烟测与 mock HTTP 端到端覆盖；真实账号实测完成于此前版本，本次没有用真实账号重新做媒体查询。
+2.0.0 把 19 个细粒度工具合并为 4 个按 `action` 组织的工具，并新增卡组详情、章节详情与 `with_cards`；章节新建 / 重命名 / 排序沿用原有引擎。2.1.0 把同步任务接入 DSH 的原生后台任务机制，不再由插件自己发送完成消息。2.2.0 为卡片搜索增加 `fuzzy` 近似匹配与 `regex` 正则查询，并保留默认的 `substring` 行为。2.3.0 精简列表、搜索、读取和同步的返回值，去掉重复环境信息、空字段与逐项包装。2.4.0 把搜索合并进列表过滤：统一的子串 / 模糊 / 正则 / 谓词模式、全库 / 卡组 / 章节范围、`fields` 与 `predicate`，并让 `progress` 支持按 `task_id` 只取单个任务。各 list 的字段集独立维护，只接受本资源的字段。以上由本地单元、入口烟测与 mock HTTP 端到端覆盖；真实账号实测完成于此前版本，本次没有用真实账号重新做媒体查询。
 
 ## 开发与测试
 
 需要 Node >= 22.13，从仓库源码运行：
 
 ```bash
-node --test "test/*.test.js"   # 单元 / 集成测试（113 项）
+node --test "test/*.test.js"   # 单元 / 集成测试（114 项）
 node test/e2e-mock.mjs         # mock 服务端端到端（13 项）
 node test/index-smoke.mjs      # 入口烟测（4 个工具）
 ```
