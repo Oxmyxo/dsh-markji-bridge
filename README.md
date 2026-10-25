@@ -111,7 +111,7 @@ markji_cards({ action: "archive", cards: ["<id1>", "<id2>"] })
 markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
 ```
 
-- 单次最多 50 项（多卡读取、语法校验的 `contents` / `cards`、`new_cards`、`updates`）；归档和移动使用非空数组。`action=get` 会去重，未知 id 以单条错误返回，不会中断整批。
+- 单次最多 50 项（多卡读取、语法校验的 `contents` / `cards`、`new_cards`、`updates`）；归档和移动使用非空数组。`action=get` 会去重并保持请求顺序，未知 id 放入 `missing`，不会中断整批。
 - `action=create` 的顶层 `deck` / `chapter` 是默认值，可以省略；每个 `new_cards` 项可写自己的 `deck` / `chapter`，所以一次调用能跨章节 / 卡组。未提供目标的项会逐条报错；每项的 `order` 相对于该项最终的目标章节。
 - 结果逐项列出 `ok` 和错误；写操作不是事务，坏项会被记录，其他项仍会排队。成功项仍需 `markji_sync({ action: "start" })` 推送。
 - `action=get` 默认不返回冗余的 `text`，需要时传 `include_text: true`。
@@ -139,7 +139,7 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | `markji_decks` | `chapter_get` | 读一个章节，可带卡片摘要 |
 | `markji_decks` | `chapter_create` / `chapter_rename` / `chapter_sort` | 新建 / 重命名 / 排序章节 |
 | `markji_cards` | `list` / `search` | 分页、过滤或按卡组名 / 章节名 / 更新时间搜索；支持子串、模糊和正则查询 |
-| `markji_cards` | `get` | 按 id 读一张或多张卡；未知 id 逐项报告 |
+| `markji_cards` | `get` | 按 id 读一张或多张卡；未知 id 列入 `missing` |
 | `markji_cards` | `create` | 用 `new_cards` 批量新建，支持跨章节 / 卡组 |
 | `markji_cards` | `update` | 改一张（`card` + `content`）或多张（`updates`） |
 | `markji_cards` | `move` / `archive` | 移动到其他章节 / 归档到「归档」章节 |
@@ -151,6 +151,15 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | `markji_sync` | `resolve` | 解决冲突（keep_local / keep_remote / use_content） |
 | `markji_file` | `upload` / `query` | 上传文件 / 查询文件信息 |
 
+### 2.3.0：精简返回值
+
+列表、搜索和同步类工具不再返回调用方通常用不到的环境信息与空字段，减少上下文占用：
+
+- 卡片的 `list` / `search` 只返回 `{ id, deck_name, chapter_name, snippet }`，仅当状态不是 `synced` 时才带 `status`；完整正文和时间戳用 `action=get` 读取。返回不再带 `cache` 和 `filters`。
+- 卡组 / 章节列表不再带 `cache`；卡组详情才带 `description` / `updated_time`，章节详情才带 `revision` / `order` / `updated_time`，默认值字段省略。`folders` 只保留 `id` / `name` / `deck_count` / 可选 `parent_id`，卡组通过 `folder_id` 关联。
+- `action=get` 的批量结果改为 `{ cards, missing? }`，不再有 `ok` / `requested` / `found` 和逐项包装。
+- 同步任务只保留有效计数，0 值字段省略；`state` 去掉环境路径与定时器细节，`failures` 去掉重复的全局恢复说明（每项仍有自己的 `recovery`），任务历史最多返回 3 条。
+
 ### 2.2.0：搜索支持模糊与正则
 
 `markji_cards` 的 `list` / `search` 新增 `query_mode`：
@@ -159,7 +168,7 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 - `fuzzy`：近似匹配，容忍少量错字、插入或删除；结果带 `score`（0-1）并按分数从高到低排序，`min_score` 可调阈值（默认 0.6）。它比较的是整条 query；空格分词时各项都要近似命中，所以应一次搜一个短短语。若 3 个以上词没有全命中，则取最稀有的词作为锚点退回部分匹配（`partial: true`、`fallback_terms`），用 `matched_terms` 标明每张卡命中了哪些词。
 - `regex`：把 `query` 当作 JavaScript 正则，`regex_flags` 支持 `i` / `m` / `s` / `u`（默认 `i`）。
 
-`matched_by` 会标明命中卡片正文还是 id；`search` 的 `filters` 会回显 `query_mode`、`regex_flags` 和 `min_score`。`list` 也支持同样的查询参数。没有结果时，`list` / `search` 会额外返回 `hint`。模糊查询退化到部分匹配时还会返回 `partial: true`、`fallback_terms`，每张卡带 `matched_terms`。
+`matched_by` 会标明命中卡片正文还是 id。`list` 也支持同样的查询参数。没有结果时，`list` / `search` 会额外返回 `hint`。模糊查询退化到部分匹配时还会返回 `partial: true`、`fallback_terms`，每张卡带 `matched_terms`。
 
 ### 2.1.0：同步接入 DSH 后台任务
 
@@ -192,16 +201,16 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 
 | 工具 / action | 参数 | 返回（主要字段） |
 | --- | --- | --- |
-| `markji_decks` / `list` | `refresh?` `folder_id?` | `{folders, decks, total, cache}` |
-| `markji_decks` / `get` | `deck` `refresh?` | `{deck, chapters, cache}` |
-| `markji_decks` / `chapter_list` | `deck?` `refresh?` | 指定 `deck`：`{deck_id, deck_name, chapters, cache}`；不指定：`{decks, cache}` |
-| `markji_decks` / `chapter_get` | `chapter` `deck?` `with_cards?` `refresh?` | `{deck_id, deck_name, chapter, cards?, total?, cache}` |
+| `markji_decks` / `list` | `refresh?` `folder_id?` | `{folders, decks, total}`；`folders` 为 `{id, name, deck_count, parent_id?}` |
+| `markji_decks` / `get` | `deck` `refresh?` | `{deck, chapters}`；详情含 `description` / `updated_time` |
+| `markji_decks` / `chapter_list` | `deck?` `refresh?` | 指定 `deck`：`{deck_id, deck_name, chapters}`；不指定：`{decks}` |
+| `markji_decks` / `chapter_get` | `chapter` `deck?` `with_cards?` `refresh?` | `{deck_id, deck_name, chapter, cards?, total?}` |
 | `markji_decks` / `chapter_create` | `deck` `name` `order?` | `{ok, action, chapter_id, deck_id, status, pending, message}` |
 | `markji_decks` / `chapter_rename` | `chapter` `name` `deck?` | `{ok, action, chapter_id, status, pending, message}` |
 | `markji_decks` / `chapter_sort` | `deck` `chapter_ids` | `{ok, action, deck_id, chapters, status, pending, message}` |
-| `markji_cards` / `list` | `deck?` `chapter?` `query?` `query_mode?` `regex_flags?` `min_score?` `limit?` `offset?` | `{total, offset, limit, has_more, cards, cache}` |
-| `markji_cards` / `search` | `query?` `query_mode?` `regex_flags?` `min_score?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, filters, cards, cache}` |
-| `markji_cards` / `get` | `card?` `cards?`（1-50，去重）`include_text?` | `{ok, requested, found, missing, cards, cache}`；`cards` 每项 `{card_id, ok, card\|error}` |
+| `markji_cards` / `list` | `deck?` `chapter?` `query?` `query_mode?` `regex_flags?` `min_score?` `limit?` `offset?` | `{total, offset, limit, has_more, cards}`，`cards` 为 CardSummary |
+| `markji_cards` / `search` | `query?` `query_mode?` `regex_flags?` `min_score?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, cards}`；部分匹配再带 `partial` / `fallback_terms` / `hint` |
+| `markji_cards` / `get` | `card?` `cards?`（1-50，去重）`include_text?` | `{cards, missing?}`；`missing` 仅在存在未知 id 时出现 |
 | `markji_cards` / `create` | `new_cards`（1-50；每项 `{content, deck?, chapter?, order?, grammar_version?}`）；顶层 `deck?` `chapter?` 是默认值 | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`；顶层默认值未提供时为 `null` |
 | `markji_cards` / `update` | `card` `content` `grammar_version?`，或 `updates`（1-50，每项 `{card, content, grammar_version?}`） | 单条：`{ok, card_id, status, changed, pending, message}`；批量：`{ok, action, mode, total, updated, unchanged, failed, partial, results}` |
 | `markji_cards` / `move` | `cards` `to_chapter` `deck?` `order?` | `{ok, moved, to_chapter_id, status, pending, message}` |
@@ -210,8 +219,8 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | `markji_cards` / `syntax_help` | `format?` | `{ok, action, format, rules, nesting, formats}` |
 | `markji_sync` / `start` | `mode?: auto/pull/push` `full?` `resume?` | `{task, job_id?, already_running?}`；`job_id` 需要 DSH 后台任务支持 |
 | `markji_sync` / `progress` | `task_id?` | `{active, tasks}` |
-| `markji_sync` / `state` | 无 | `{version, data_dir, cache_file, configured, base_url, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
-| `markji_sync` / `failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, recovery, truncated}` |
+| `markji_sync` / `state` | 无 | `{version, configured, cache_file, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
+| `markji_sync` / `failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, truncated?}`；每项自带 `recovery` |
 | `markji_sync` / `resolve` | `id` `strategy: keep_local/keep_remote/use_content` `content?` | `{ok, id, entity, strategy, state, changed}` |
 | `markji_file` / `upload` | `path` `deck?` | `{file}` |
 | `markji_file` / `query` | `ids` `expires?` | `{files}` |
@@ -235,36 +244,29 @@ markji_cards({ action: "validate", cards: ["<id1>", "<id2>"] })          // 批�
 ### 返回结构
 
 ```text
-CacheInfo = {
-  pulled_at?, last_full_pull_at?, stale: boolean,
-  error: string|null, save_error?: string|null,
-}
-
 DeckView = {
-  id, name, description, card_count, chapter_count,
-  updated_time, is_private, source, status, missing,
+  id, name, card_count, chapter_count,
+  folder_id?, description?, updated_time?,
+  is_private?, source?, status?, missing?,
 }
 
 ChapterView = {
-  id, name, revision, order, card_count,
-  pending: null | object, updated_time, local, missing,
+  id, name, card_count,
+  pending?: { op, name }, local?, missing?,
+  revision?, order?, updated_time?,
 }
 
 CardSummary = {
-  id, deck_id, deck_name, chapter_id, chapter_name,
-  status: "synced" | "dirty" | "new" | "conflict",
-  revision, snippet, updated_time,
+  id, deck_name, chapter_name, snippet,
+  status?: "dirty" | "new" | "conflict",
 }
 
 CardView = {
-  id, deck_id, chapter_id, chapter_name,
+  id, deck_id, deck_name, chapter_id, chapter_name,
   content: string, text: string, grammar_version: number,
-  status, local: boolean,
-  cloud: null | { revision, updated_time },
-  pending: null | { content, grammar_version },
-  conflict: null | ConflictView,
-  last_error: null | { code, message },
+  status, cloud: null | { revision, updated_time },
   created_time, updated_time,
+  local?, pending?, conflict?, last_error?,
 }
 
 ConflictView = {
@@ -276,49 +278,48 @@ ConflictView = {
 
 SyncTask = {
   task_id, status: "running" | "completed" | "failed" | "interrupted",
-  mode: "auto" | "pull" | "push", full: boolean,
-  started_at, updated_at, finished_at, stage, resume_count,
+  mode: "auto" | "pull" | "push", stage,
+  started_at, finished_at, resume_count,
   progress: {
-    message, decks_total, decks_done, decks_seen, chapters, cards,
-    cards_deleted, adopted_cards, adopted_chapters, conflicts_created,
-    chapters_created, chapters_renamed, chapters_sorted,
-    cards_created, cards_updated, cards_moved, errors,
+    message, decks_total, decks_done,
+    chapters?, cards?, cards_deleted?, adopted_cards?, adopted_chapters?,
+    conflicts_created?, chapters_created?, chapters_renamed?, chapters_sorted?,
+    cards_created?, cards_updated?, cards_moved?, errors?,
   },
-  error: null | { code, message },
-  report: null | SyncReport,
+  full?, error?: { code, message }, hint?,
+  report?: SyncReport,
 }
 
 SyncReport = {
-  ok, mode, started_at, finished_at, duration_ms,
-  pull: {
-    decks, chapters, cards, cards_deleted,
-    adopted_cards, adopted_chapters, conflicts,
+  ok, mode, duration_ms,
+  pull?: {
+    decks?, chapters?, cards?, cards_deleted?,
+    adopted_cards?, adopted_chapters?, conflicts?,
   },
-  push: {
-    chapters_created, chapters_renamed, chapters_sorted,
-    cards_created, cards_updated, cards_moved, conflicts, errors,
+  push?: {
+    chapters_created?, chapters_renamed?, chapters_sorted?,
+    cards_created?, cards_updated?, cards_moved?, conflicts?,
+    errors?: [{ op, id, code, message }], errors_total?,
   },
-  conflicts: [ConflictView], errors: [{ op, id, code, message }],
-  errors_total, cache: CacheInfo,
+  conflicts?: [ConflictView],
+  errors?: [{ op, id, code, message }], errors_total?,
 }
 
 Status = {
-  version, data_dir, cache_file, configured, base_url,
+  version, configured, cache_file,
   cache: {
-    decks, chapters, cards, bytes, pulled_at, last_full_pull_at,
-    pushed_at, stale, error, save_error,
+    decks, chapters, cards, bytes, pulled_at,
+    stale?, error?, save_error?,
   },
   pending: {
-    cards_new, cards_dirty, chapters_new, chapters_rename,
-    moves, sorts, conflicts,
+    cards_new?, cards_dirty?, chapters_new?, chapters_rename?,
+    moves?, sorts?, conflicts?,
   },
-  conflicts: [ConflictView], last_sync: SyncReport|null,
+  conflicts: [ConflictView],
+  last_sync: { ok, mode, started_at, finished_at, duration_ms, conflicts, errors }|null,
   last_error: null | { code, message },
-  active_task: SyncTask|null, tasks: [SyncTask],
-  auto_sync: {
-    enabled, timer, running, last_activity_at,
-    idle_quiet_ms, pull_ttl_ms,
-  },
+  active_task: string|null, tasks: [SyncTask],
+  auto_sync: { enabled, running },
 }
 
 Failures = {
@@ -326,13 +327,12 @@ Failures = {
   conflicts: [ConflictView],
   failed_cards: [{
     id, deck_id, deck_name, chapter_id, chapter_name,
-    status, local, pending, snippet,
+    status, snippet,
     error: { code, message },
     recovery: { tool, arguments, strategies, hint },
   }],
   last_task_errors: [{ task_id, op, id, code, message }],
-  recovery: { conflicts, failed_cards, after_resolution },
-  truncated: boolean,
+  truncated?: boolean,
 }
 ```
 
@@ -433,13 +433,13 @@ Failures = {
 
 | 环境 | 结果 |
 | --- | --- |
-| Windows + Node 25.2.1 | 2.2.0：单元 106/106，E2E 13/13，入口冒烟 4 个工具。同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑曾在 1.x 真实账号实测；2.1.0 的 DSH 后台任务接入、2.2.0 的模糊 / 正则搜索另在真实 DSH 中做了联调。 |
+| Windows + Node 25.2.1 | 2.3.0：单元 106/106，E2E 13/13，入口冒烟 4 个工具；精简后的返回值在真实 DSH 中联调过。同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑曾在 1.x 真实账号实测；2.1.0 的 DSH 后台任务接入、2.2.0 的模糊 / 正则搜索也在真实 DSH 中验证过。 |
 | WSL2 Ubuntu 26.04（Linux 6.18，Node v22.22.1） | 最后一次验证在 1.6.0：单元 97/97，E2E 13/13，入口冒烟 19 个工具；2.0.0 尚未在 WSL 复跑。 |
 | macOS | 未实机测试；代码只用 Node 内置模块，理论上可用。 |
 
 WSL 验证是在 Linux 环境里直接跑仓库的测试和入口烟测，不是在 WSL 里另装一套 DSH。要在 WSL 里实际使用，DSH 本身也应运行在该发行版中。
 
-2.0.0 把 19 个细粒度工具合并为 4 个按 `action` 组织的工具，并新增卡组详情、章节详情与 `with_cards`；章节新建 / 重命名 / 排序沿用原有引擎。2.1.0 把同步任务接入 DSH 的原生后台任务机制，不再由插件自己发送完成消息。2.2.0 为卡片搜索增加 `fuzzy` 近似匹配与 `regex` 正则查询，并保留默认的 `substring` 行为。以上由本地单元、入口烟测与 mock HTTP 端到端覆盖；真实账号实测完成于此前版本，本次没有用真实账号重新做媒体查询。
+2.0.0 把 19 个细粒度工具合并为 4 个按 `action` 组织的工具，并新增卡组详情、章节详情与 `with_cards`；章节新建 / 重命名 / 排序沿用原有引擎。2.1.0 把同步任务接入 DSH 的原生后台任务机制，不再由插件自己发送完成消息。2.2.0 为卡片搜索增加 `fuzzy` 近似匹配与 `regex` 正则查询，并保留默认的 `substring` 行为。2.3.0 精简列表、搜索、读取和同步的返回值，去掉重复环境信息、空字段与逐项包装。以上由本地单元、入口烟测与 mock HTTP 端到端覆盖；真实账号实测完成于此前版本，本次没有用真实账号重新做媒体查询。
 
 ## 开发与测试
 

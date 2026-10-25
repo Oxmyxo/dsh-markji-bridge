@@ -344,6 +344,7 @@ Local id format: local_ + 12 lowercase hex chars, generated with node:crypto ran
     //   searchCards({ query, query_mode, regex_flags, min_score, deck, deck_name, chapter, chapter_name,
     //                 updated_after, updated_before, limit, offset, refresh } = {}): Promise<object>,
     //   getCard({ card, deck } = {}): Promise<object>,
+    //   getCards({ cards } = {}): Promise<{ cards, missing? }>,
     //   createCard({ deck, chapter, content, order, grammar_version }): Promise<object>,
     //   updateCard({ card, content, grammar_version }): Promise<object>,
     //   moveCards({ cards, to_chapter, order, deck }): Promise<object>,
@@ -491,22 +492,20 @@ The markji_sync tool must return immediately because a first pull can take minut
 persists it in cache.tasks, starts the pull/push pipeline in the background (void promise,
 mutex-queued behind any running sync) and returns a task view at once.
 
-    SyncTask = {
+    SyncTask (view) = {
       task_id: 'sync_<12 hex>',
-      mode: 'auto'|'pull'|'push', full: boolean,
+      mode: 'auto'|'pull'|'push', full?: true,
       status: 'running'|'completed'|'failed'|'interrupted',
-      started_at, updated_at, finished_at: number|null,
+      started_at, finished_at: number|null,
       stage: 'starting'|'pull'|'push'|'done',
-      progress: {
-        message: string, decks_total, decks_done, chapters, cards, cards_deleted,
-        adopted_cards, adopted_chapters, conflicts_created,
-        chapters_created, chapters_renamed, chapters_sorted,
-        cards_created, cards_updated, cards_moved, errors,
-      },
+      progress: { message, decks_total, decks_done, <nonzero counters> },
       resume_count: number,
-      error: { code, message }|null,
-      report: SyncReport|null,      // compact copy once completed
+      error?: { code, message },
+      hint?: string,                // running/interrupted/failed guidance
+      report?: SyncReport,          // compact copy once completed
     }
+    // task.updated_at and zero-valued counters stay internal. progress keeps
+    // decks_total/decks_done plus only nonzero counters.
 
 Rules:
 
@@ -552,7 +551,7 @@ Rules:
 Tools:
 
     markji_sync action=start    { mode?, full?, resume? } -> { task: SyncTask, job_id?, already_running? }  (no wait)
-    markji_sync action=progress { task_id? }              -> { active: SyncTask|null, tasks: SyncTask[] }
+    markji_sync action=progress { task_id? }              -> { active: SyncTask|null, tasks: SyncTask[] }  // newest 3
 
 ### DSH background-job bridge
 
@@ -584,19 +583,22 @@ notification. It is optional at runtime:
 - ensureFresh(maxAgeMs) = if no cache loaded -> load; if meta.last_pull_at is null/ancient
   (or maxAge 0) -> pull({full:false}). Read methods (refresh !== true) call
   ensureFresh(config.pullTtlMs); refresh === true forces pull({full:false}). If the pull
-  throws, reads still serve the cache and include cache: { stale: true, error: message }.
+  throws, reads still serve the cache; the stale/error state is reported by markji_sync state.
 - Missing-entity lookup (getCard/updateCard/createCard/moveCards/chapter create|rename) ->
   pull({full:false}) once (only decks the provider marks changed; a full pull of a large
   account takes minutes and a typo id must fail fast), retry, then throw MarkjiError
   (unknown_deck|unknown_chapter|unknown_card) with a hint to run markji_sync mode=pull
   full=true when the entity may exist on another device.
-- listDecks -> { folders: [{ id, name, parent_id, items }], decks: [{ id, name, description,
-  card_count, chapter_count, updated_time, is_private, source, missing }], total,
-  cache: { pulled_at, stale, error } }.
-- listChapters({deck}) -> { deck_id, deck_name, chapters: [ChapterView], cache }; without
-  deck -> { decks: [{ deck_id, deck_name, chapters: [ChapterView] }], cache }.
-  ChapterView = { id, name, revision, order, card_count, pending, updated_time, local }.
-- listCards -> { total, offset, limit, has_more, cards: [CardSummary], cache,
+- listDecks -> { folders: [{ id, name, deck_count, parent_id? }], decks: [DeckView], total }.
+  Folder items are no longer returned; DeckView.folder_id maps a deck to its folder.
+  DeckView = { id, name, card_count, chapter_count, folder_id?, is_private?, source?,
+  status?, missing?, description?, updated_time? }; description/updated_time only in getDeck,
+  and default-valued flags are omitted.
+- listChapters({deck}) -> { deck_id, deck_name, chapters: [ChapterView] }; without
+  deck -> { decks: [{ deck_id, deck_name, chapters: [ChapterView] }] }.
+  ChapterView = { id, name, card_count, pending?, local?, missing? }; getChapter/chapter_get
+  (detail=true) adds revision, order and updated_time.
+- listCards -> { total, offset, limit, has_more, cards: [CardSummary],
   partial?, fallback_terms?, hint? }, filtered by
   deck and/or chapter; query is matched over the derived plain text (see lib/plain-text.js;
   also the card id), with query_mode selecting substring (default), fuzzy, or regex (see
@@ -606,11 +608,11 @@ notification. It is optional at runtime:
   result.fallback_terms anchors, cards matching an anchor are ranked by anchor count then rarity,
   each card gets matched_terms, and result.hint explains the fallback. A zero-result query gets
   a hint suggesting a shorter phrase or regex alternative. Default limit 50, max 200.
-  CardSummary = { id, deck_id, deck_name, chapter_id,
-  chapter_name, status: 'synced'|'dirty'|'new'|'conflict', revision, snippet, updated_time }
-  plus optional score / matched_by / matched_terms.
-- searchCards -> { total, offset, limit, has_more, filters, cards: [CardSummary], cache,
-  partial?, fallback_terms?, hint? }.
+  CardSummary = { id, deck_name, chapter_name, snippet, status? } plus optional score /
+  matched_by / matched_terms. status is present only when it is dirty, new or conflict;
+  revision, ids and updated_time are available through getCard.
+- searchCards -> { total, offset, limit, has_more, cards: [CardSummary],
+  partial?, fallback_terms?, hint? }; the normalized filter values are not echoed.
   All filters AND together and run in memory over the loaded cache: query is matched by
   query_mode = substring (default, case-insensitive substring of the derived plain text and
   card id), fuzzy (approximate plain-text match with score, tolerating small edits; min_score
@@ -630,10 +632,11 @@ notification. It is optional at runtime:
   reversed times reject with invalid_argument; invalid query_mode / regex_flags / min_score
   reject with invalid_argument; unknown deck/chapter ids reject. snippet is centred on the
   first content match. refresh=true forces a pull (otherwise the pull TTL applies).
-- getCard -> { card: { id, deck_id, chapter_id, chapter_name, content, text, grammar_version,
-  status, cloud: {revision, updated_time} | null, pending, conflict: ConflictView|null,
-  created_time, updated_time } }. content is the rich text needed for updates; text is the
-  plain-text view used for reading/searching.
+- getCard -> { card: { id, deck_id, deck_name, chapter_id, chapter_name, content, text,
+  grammar_version, status, cloud: {revision, updated_time} | null, pending?,
+  conflict: ConflictView|null, last_error?, created_time, updated_time } }. content is the rich
+  text needed for updates; text is the plain-text view used for reading/searching. Null optional
+  fields (local/pending/conflict/last_error) are omitted.
 - Writes validate: deck/chapter/card exist in cache (error unknown_deck|unknown_chapter|
   unknown_card with a hint to call markji_sync mode=pull full=true), non-empty content
   (max 100000 chars), identical content and grammar_version -> { ok: true, changed: false }.
@@ -741,9 +744,10 @@ moved.
 ### Batch semantics
 
 `getCards({ cards })` de-duplicates ids while preserving request order, runs one
-`ensureFresh` and at most one `forcePullForMissing('cards')`, then maps every id to
-`{ card_id, ok, card | error }`; the tool strips `card.text` unless
-`include_text` is true. `markji_cards({ action:'validate' })` accepts exactly one of `content`,
+`ensureFresh` and at most one `forcePullForMissing('cards')`, then returns
+`{ cards: [CardView], missing?: [id] }`; the tool strips `card.text` unless
+`include_text` is true. `action=validate` builds an error item per `missing` id so a
+bad id does not abort the batch. `markji_cards({ action:'validate' })` accepts exactly one of `content`,
 `contents`, or `cards`; the cards mode validates the pending content when present
 and reports `content_source`. `markji_cards({ action:'create' })` resolves each `new_cards` item's deck/chapter from the item
 or the top-level defaults, then calls the single-card engine method once per
@@ -760,9 +764,10 @@ defaults `include_text` to false to stay inside the tool-output budget.
 summary counts; open `conflicts` with entity/base/local/remote and `recovery { tool, arguments,
 strategies, hint }`; `failed_cards` for cards whose `last_error` is set and that still have
 pending/local work or a missing deck/chapter (successful push and conflict resolution clear it),
-with `error { code, op, message, at }` and a retry suggestion; and `last_task_errors` from the
-most recent task reports. It accepts one card/deck filter and a bounded limit, and never touches
-the network.
+with `error { code, op, message, at }` and a per-item `recovery`; and
+`last_task_errors` from the most recent task reports. There is no global static recovery block:
+each conflict and failed card carries its own recovery. It accepts one card/deck filter and a
+bounded limit, and never touches the network.
 
 - markji_cards gets timeoutMs: 120000; markji_decks / markji_sync get 60000;
   markji_file uploads can be large, so keep 180000 for that one. markji_sync no longer waits

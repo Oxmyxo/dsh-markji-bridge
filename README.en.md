@@ -111,7 +111,7 @@ markji_cards({ action: "archive", cards: ["<id1>", "<id2>"] })
 markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
 ```
 
-- Batch actions accept at most 50 items (multi-card reads, syntax `contents` / `cards`, `new_cards`, `updates`); archive and move use a non-empty array. `action=get` collapses duplicate ids; unknown ids are returned as per-item errors and do not abort the batch.
+- Batch actions accept at most 50 items (multi-card reads, syntax `contents` / `cards`, `new_cards`, `updates`); archive and move use a non-empty array. `action=get` collapses duplicate ids and keeps request order; unknown ids are listed in `missing` and do not abort the batch.
 - The top-level `deck` / `chapter` of `action=create` are optional defaults; each `new_cards` item may set its own `deck` / `chapter`, so one call can span chapters or decks. An item with no target is reported as a per-item error; each item's `order` is relative to its final target chapter.
 - Results list `ok` and errors per item. Writes are not a transaction: bad items are reported while the other items are still queued, and successful items still need `markji_sync({ action: "start" })`.
 - `action=get` omits the redundant `text` view by default; pass `include_text: true` when needed.
@@ -139,7 +139,7 @@ Only four tools are registered; `action` selects the operation, and omitting it 
 | `markji_decks` | `chapter_get` | Read one chapter, optionally with card summaries |
 | `markji_decks` | `chapter_create` / `chapter_rename` / `chapter_sort` | Create / rename / sort chapters |
 | `markji_cards` | `list` / `search` | Paginate and filter, or search by deck name, chapter name, and update time; supports substring, fuzzy, and regex queries |
-| `markji_cards` | `get` | Read one or several cards by id; unknown ids are reported per item |
+| `markji_cards` | `get` | Read one or several cards by id; unknown ids are listed in `missing` |
 | `markji_cards` | `create` | Batch-create from `new_cards`, including across chapters or decks |
 | `markji_cards` | `update` | Update one card (`card` + `content`) or several (`updates`) |
 | `markji_cards` | `move` / `archive` | Move to another chapter / archive into the "Archive" chapter |
@@ -151,6 +151,15 @@ Only four tools are registered; `action` selects the operation, and omitting it 
 | `markji_sync` | `resolve` | Resolve a conflict (keep_local / keep_remote / use_content) |
 | `markji_file` | `upload` / `query` | Upload a file / query file metadata |
 
+### 2.3.0: compact return values
+
+List, search, and sync actions no longer return environment details and empty fields that callers rarely use, reducing context usage:
+
+- Card `list` / `search` return only `{ id, deck_name, chapter_name, snippet }`, adding `status` only when it is not `synced`; use `action=get` for full content and timestamps. Results no longer include `cache` or `filters`.
+- Deck / chapter lists no longer include `cache`. Only deck detail carries `description` / `updated_time`, and only chapter detail carries `revision` / `order` / `updated_time`; default-valued fields are omitted. `folders` keeps `id` / `name` / `deck_count` / optional `parent_id`, and decks link to them through `folder_id`.
+- Batch `action=get` now returns `{ cards, missing? }` instead of `ok` / `requested` / `found` and per-item wrappers.
+- Sync tasks keep only effective counters (zeros are omitted); `state` drops environment paths and timer internals, `failures` drops the repeated global recovery text (each item keeps its own `recovery`), and task history returns at most 3 entries.
+
 ### 2.2.0: fuzzy and regex search
 
 `markji_cards` `list` / `search` now accept `query_mode`:
@@ -159,7 +168,7 @@ Only four tools are registered; `action` selects the operation, and omitting it 
 - `fuzzy`: approximate matching that tolerates small typos, insertions, and deletions; results carry `score` (0-1) and sort best-first, and `min_score` tunes the threshold (default 0.6). It compares the whole query; space-separated terms must all match approximately, so search one short phrase at a time. When 3+ terms match no card fully, it anchors on the rarest terms and falls back to partial matches (`partial: true`, `fallback_terms`) with per-card `matched_terms`.
 - `regex`: treats `query` as a JavaScript regular expression; `regex_flags` accepts `i` / `m` / `s` / `u` (default `i`).
 
-`matched_by` reports whether the card body or id matched; `search` `filters` echoes `query_mode`, `regex_flags`, and `min_score`. `list` accepts the same query options. When nothing matches, `list` / `search` include a `hint`; a fuzzy partial fallback also sets `partial: true`, `fallback_terms`, and per-card `matched_terms`.
+`matched_by` reports whether the card body or id matched. `list` accepts the same query options. When nothing matches, `list` / `search` include a `hint`; a fuzzy partial fallback also sets `partial: true`, `fallback_terms`, and per-card `matched_terms`.
 
 ### 2.1.0: sync as a DSH background job
 
@@ -192,16 +201,16 @@ Without `dsh-tool-jobs`, or when the call does not come from a session, no `job_
 
 | Tool / action | Parameters | Returns (main fields) |
 | --- | --- | --- |
-| `markji_decks` / `list` | `refresh?` `folder_id?` | `{folders, decks, total, cache}` |
-| `markji_decks` / `get` | `deck` `refresh?` | `{deck, chapters, cache}` |
-| `markji_decks` / `chapter_list` | `deck?` `refresh?` | With `deck`: `{deck_id, deck_name, chapters, cache}`; without: `{decks, cache}` |
-| `markji_decks` / `chapter_get` | `chapter` `deck?` `with_cards?` `refresh?` | `{deck_id, deck_name, chapter, cards?, total?, cache}` |
+| `markji_decks` / `list` | `refresh?` `folder_id?` | `{folders, decks, total}`; `folders` items are `{id, name, deck_count, parent_id?}` |
+| `markji_decks` / `get` | `deck` `refresh?` | `{deck, chapters}`; detail includes `description` / `updated_time` |
+| `markji_decks` / `chapter_list` | `deck?` `refresh?` | With `deck`: `{deck_id, deck_name, chapters}`; without: `{decks}` |
+| `markji_decks` / `chapter_get` | `chapter` `deck?` `with_cards?` `refresh?` | `{deck_id, deck_name, chapter, cards?, total?}` |
 | `markji_decks` / `chapter_create` | `deck` `name` `order?` | `{ok, action, chapter_id, deck_id, status, pending, message}` |
 | `markji_decks` / `chapter_rename` | `chapter` `name` `deck?` | `{ok, action, chapter_id, status, pending, message}` |
 | `markji_decks` / `chapter_sort` | `deck` `chapter_ids` | `{ok, action, deck_id, chapters, status, pending, message}` |
-| `markji_cards` / `list` | `deck?` `chapter?` `query?` `query_mode?` `regex_flags?` `min_score?` `limit?` `offset?` | `{total, offset, limit, has_more, cards, cache}` |
-| `markji_cards` / `search` | `query?` `query_mode?` `regex_flags?` `min_score?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, filters, cards, cache}` |
-| `markji_cards` / `get` | `card?` `cards?` (1-50, deduplicated) `include_text?` | `{ok, requested, found, missing, cards, cache}`; each `cards` item is `{card_id, ok, card\|error}` |
+| `markji_cards` / `list` | `deck?` `chapter?` `query?` `query_mode?` `regex_flags?` `min_score?` `limit?` `offset?` | `{total, offset, limit, has_more, cards}`; `cards` are CardSummary |
+| `markji_cards` / `search` | `query?` `query_mode?` `regex_flags?` `min_score?` `deck?` `deck_name?` `chapter?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, cards}`; partial matches also add `partial` / `fallback_terms` / `hint` |
+| `markji_cards` / `get` | `card?` `cards?` (1-50, deduplicated) `include_text?` | `{cards, missing?}`; `missing` appears only when some ids are unknown |
 | `markji_cards` / `create` | `new_cards` (1-50; each `{content, deck?, chapter?, order?, grammar_version?}`); top-level `deck?` `chapter?` are defaults | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`; top-level defaults are `null` when omitted |
 | `markji_cards` / `update` | `card` `content` `grammar_version?`, or `updates` (1-50, each `{card, content, grammar_version?}`) | single: `{ok, card_id, status, changed, pending, message}`; batch: `{ok, action, mode, total, updated, unchanged, failed, partial, results}` |
 | `markji_cards` / `move` | `cards` `to_chapter` `deck?` `order?` | `{ok, moved, to_chapter_id, status, pending, message}` |
@@ -210,8 +219,8 @@ Without `dsh-tool-jobs`, or when the call does not come from a session, no `job_
 | `markji_cards` / `syntax_help` | `format?` | `{ok, action, format, rules, nesting, formats}` |
 | `markji_sync` / `start` | `mode?: auto/pull/push` `full?` `resume?` | `{task, job_id?, already_running?}`; `job_id` requires DSH background-job support |
 | `markji_sync` / `progress` | `task_id?` | `{active, tasks}` |
-| `markji_sync` / `state` | none | `{version, data_dir, cache_file, configured, base_url, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
-| `markji_sync` / `failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, recovery, truncated}` |
+| `markji_sync` / `state` | none | `{version, configured, cache_file, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
+| `markji_sync` / `failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, truncated?}`; each item has its own `recovery` |
 | `markji_sync` / `resolve` | `id` `strategy: keep_local/keep_remote/use_content` `content?` | `{ok, id, entity, strategy, state, changed}` |
 | `markji_file` / `upload` | `path` `deck?` | `{file}` |
 | `markji_file` / `query` | `ids` `expires?` | `{files}` |
@@ -235,36 +244,29 @@ For `action=syntax_help`, omit `format` or pass `all`; pass `basic` for just the
 ### Return structures
 
 ```text
-CacheInfo = {
-  pulled_at?, last_full_pull_at?, stale: boolean,
-  error: string|null, save_error?: string|null,
-}
-
 DeckView = {
-  id, name, description, card_count, chapter_count,
-  updated_time, is_private, source, status, missing,
+  id, name, card_count, chapter_count,
+  folder_id?, description?, updated_time?,
+  is_private?, source?, status?, missing?,
 }
 
 ChapterView = {
-  id, name, revision, order, card_count,
-  pending: null | object, updated_time, local, missing,
+  id, name, card_count,
+  pending?: { op, name }, local?, missing?,
+  revision?, order?, updated_time?,
 }
 
 CardSummary = {
-  id, deck_id, deck_name, chapter_id, chapter_name,
-  status: "synced" | "dirty" | "new" | "conflict",
-  revision, snippet, updated_time,
+  id, deck_name, chapter_name, snippet,
+  status?: "dirty" | "new" | "conflict",
 }
 
 CardView = {
-  id, deck_id, chapter_id, chapter_name,
+  id, deck_id, deck_name, chapter_id, chapter_name,
   content: string, text: string, grammar_version: number,
-  status, local: boolean,
-  cloud: null | { revision, updated_time },
-  pending: null | { content, grammar_version },
-  conflict: null | ConflictView,
-  last_error: null | { code, message },
+  status, cloud: null | { revision, updated_time },
   created_time, updated_time,
+  local?, pending?, conflict?, last_error?,
 }
 
 ConflictView = {
@@ -276,49 +278,48 @@ ConflictView = {
 
 SyncTask = {
   task_id, status: "running" | "completed" | "failed" | "interrupted",
-  mode: "auto" | "pull" | "push", full: boolean,
-  started_at, updated_at, finished_at, stage, resume_count,
+  mode: "auto" | "pull" | "push", stage,
+  started_at, finished_at, resume_count,
   progress: {
-    message, decks_total, decks_done, decks_seen, chapters, cards,
-    cards_deleted, adopted_cards, adopted_chapters, conflicts_created,
-    chapters_created, chapters_renamed, chapters_sorted,
-    cards_created, cards_updated, cards_moved, errors,
+    message, decks_total, decks_done,
+    chapters?, cards?, cards_deleted?, adopted_cards?, adopted_chapters?,
+    conflicts_created?, chapters_created?, chapters_renamed?, chapters_sorted?,
+    cards_created?, cards_updated?, cards_moved?, errors?,
   },
-  error: null | { code, message },
-  report: null | SyncReport,
+  full?, error?: { code, message }, hint?,
+  report?: SyncReport,
 }
 
 SyncReport = {
-  ok, mode, started_at, finished_at, duration_ms,
-  pull: {
-    decks, chapters, cards, cards_deleted,
-    adopted_cards, adopted_chapters, conflicts,
+  ok, mode, duration_ms,
+  pull?: {
+    decks?, chapters?, cards?, cards_deleted?,
+    adopted_cards?, adopted_chapters?, conflicts?,
   },
-  push: {
-    chapters_created, chapters_renamed, chapters_sorted,
-    cards_created, cards_updated, cards_moved, conflicts, errors,
+  push?: {
+    chapters_created?, chapters_renamed?, chapters_sorted?,
+    cards_created?, cards_updated?, cards_moved?, conflicts?,
+    errors?: [{ op, id, code, message }], errors_total?,
   },
-  conflicts: [ConflictView], errors: [{ op, id, code, message }],
-  errors_total, cache: CacheInfo,
+  conflicts?: [ConflictView],
+  errors?: [{ op, id, code, message }], errors_total?,
 }
 
 Status = {
-  version, data_dir, cache_file, configured, base_url,
+  version, configured, cache_file,
   cache: {
-    decks, chapters, cards, bytes, pulled_at, last_full_pull_at,
-    pushed_at, stale, error, save_error,
+    decks, chapters, cards, bytes, pulled_at,
+    stale?, error?, save_error?,
   },
   pending: {
-    cards_new, cards_dirty, chapters_new, chapters_rename,
-    moves, sorts, conflicts,
+    cards_new?, cards_dirty?, chapters_new?, chapters_rename?,
+    moves?, sorts?, conflicts?,
   },
-  conflicts: [ConflictView], last_sync: SyncReport|null,
+  conflicts: [ConflictView],
+  last_sync: { ok, mode, started_at, finished_at, duration_ms, conflicts, errors }|null,
   last_error: null | { code, message },
-  active_task: SyncTask|null, tasks: [SyncTask],
-  auto_sync: {
-    enabled, timer, running, last_activity_at,
-    idle_quiet_ms, pull_ttl_ms,
-  },
+  active_task: string|null, tasks: [SyncTask],
+  auto_sync: { enabled, running },
 }
 
 Failures = {
@@ -326,13 +327,12 @@ Failures = {
   conflicts: [ConflictView],
   failed_cards: [{
     id, deck_id, deck_name, chapter_id, chapter_name,
-    status, local, pending, snippet,
+    status, snippet,
     error: { code, message },
     recovery: { tool, arguments, strategies, hint },
   }],
   last_task_errors: [{ task_id, op, id, code, message }],
-  recovery: { conflicts, failed_cards, after_resolution },
-  truncated: boolean,
+  truncated?: boolean,
 }
 ```
 
@@ -433,13 +433,13 @@ Common issues:
 
 | Environment | Result |
 | --- | --- |
-| Windows + Node 25.2.1 | 2.2.0: unit 106/106, E2E 13/13, entry smoke 4 tools. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x; the 2.1.0 DSH background-job integration and 2.2.0 fuzzy / regex search were also exercised in a live DSH. |
+| Windows + Node 25.2.1 | 2.3.0: unit 106/106, E2E 13/13, entry smoke 4 tools; the compact return values were also checked in a live DSH. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x; the 2.1.0 DSH background-job integration and 2.2.0 fuzzy / regex search were also exercised in a live DSH. |
 | WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Last verified on 1.6.0: unit 97/97, E2E 13/13, entry smoke 19 tools; 2.0.0 has not been re-run in WSL. |
 | macOS | Not tested on real hardware; the code uses only Node built-in modules and should work. |
 
 The WSL verification ran the repository's tests and entry smoke check directly in Linux; it did not install a second DSH inside WSL. To actually use the plugin under WSL, DSH itself should also run in that distribution.
 
-2.0.0 consolidates the 19 fine-grained tools into four action-based tools and adds deck detail, chapter detail, and `with_cards`; chapter create / rename / sort reuse the existing engine. 2.1.0 connects sync tasks to DSH's native background-job mechanism instead of sending a plugin-specific completion message. 2.2.0 adds `fuzzy` approximate matching and `regex` regular-expression queries to card search while keeping the default `substring` behavior. These paths are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
+2.0.0 consolidates the 19 fine-grained tools into four action-based tools and adds deck detail, chapter detail, and `with_cards`; chapter create / rename / sort reuse the existing engine. 2.1.0 connects sync tasks to DSH's native background-job mechanism instead of sending a plugin-specific completion message. 2.2.0 adds `fuzzy` approximate matching and `regex` regular-expression queries to card search while keeping the default `substring` behavior. 2.3.0 compacts list, search, read, and sync return values by removing repeated environment data, empty fields, and per-item wrappers. These paths are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
 
 ## Development and testing
 

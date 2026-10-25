@@ -96,20 +96,15 @@ async function withFixture(run) {
 test('markji_cards action=get returns several cards in request order and isolates unknown ids', async () => {
   await withFixture(async ({ call, good, alsoGood }) => {
     const result = await call('markji_cards', { action: 'get', cards: [alsoGood.id, good.id, 'missing_card_id'] });
-    assert.equal(result.requested, 3);
-    assert.equal(result.found, 2);
+    assert.equal(result.cards.length, 2);
     assert.deepEqual(result.missing, ['missing_card_id']);
-    assert.equal(result.ok, false);
-    assert.equal(result.cards.length, 3);
-    assert.equal(result.cards[0].card_id, alsoGood.id);
-    assert.match(result.cards[0].card.content, /第二张/);
-    assert.equal(result.cards[0].card.text, undefined, 'text is omitted by default');
-    assert.equal(result.cards[1].card_id, good.id);
-    assert.equal(result.cards[2].ok, false);
-    assert.equal(result.cards[2].error.code, 'unknown_card');
+    assert.equal(result.cards[0].id, alsoGood.id);
+    assert.match(result.cards[0].content, /第二张/);
+    assert.equal(result.cards[0].text, undefined, 'text is omitted by default');
+    assert.equal(result.cards[1].id, good.id);
 
     const withText = await call('markji_cards', { action: 'get', cards: [good.id], include_text: true });
-    assert.match(withText.cards[0].card.text, /第一张正常卡片/);
+    assert.match(withText.cards[0].text, /第一张正常卡片/);
   });
 });
 

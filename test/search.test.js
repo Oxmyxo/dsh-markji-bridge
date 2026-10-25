@@ -93,9 +93,7 @@ test('search supports fuzzy, regex and query flags', async () => {
     assert.equal(fuzzy.cards[0].matched_by, 'text');
     assert.ok(fuzzy.cards[0].score >= 0.6 && fuzzy.cards[0].score <= 1, JSON.stringify(fuzzy.cards[0]));
     assert.match(fuzzy.cards[0].snippet, /变量/);
-    assert.equal(fuzzy.filters.query_mode, 'fuzzy');
-    assert.equal(fuzzy.filters.min_score, 0.6);
-    assert.equal(fuzzy.filters.regex_flags, null);
+    assert.equal(fuzzy.filters, undefined);
 
     const strictFuzzy = await engine.searchCards({ query: '变量初始话', query_mode: 'fuzzy', min_score: 0.9 });
     assert.equal(strictFuzzy.total, 0);
@@ -124,9 +122,7 @@ test('search supports fuzzy, regex and query flags', async () => {
 
     const regex = await engine.searchCards({ query: '变量|指针', query_mode: 'regex' });
     assert.deepEqual(regex.cards.map((card) => card.id), ['k1', 'k2']);
-    assert.equal(regex.filters.query_mode, 'regex');
-    assert.equal(regex.filters.regex_flags, 'i');
-    assert.equal(regex.filters.min_score, null);
+    assert.equal(regex.filters, undefined);
 
     const insensitive = await engine.searchCards({ query: 'spi', query_mode: 'regex' });
     assert.deepEqual(insensitive.cards.map((card) => card.id), ['k3']);

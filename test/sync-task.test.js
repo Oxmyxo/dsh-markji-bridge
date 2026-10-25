@@ -222,7 +222,7 @@ test('resuming adopts cards the provider already created instead of duplicating 
     const done = await b.engine.waitForTask(taskId, 20000);
     assert.equal(done.status, 'completed', 'resume completes: ' + JSON.stringify(done.error));
     assert.equal(done.report.pull.adopted_cards, 1, 'already-created card was adopted: ' + JSON.stringify(done.report.pull));
-    assert.equal(done.report.push ? done.report.push.cards_created : 0, 0, 'no card create was retried');
+    assert.equal((done.report.push && done.report.push.cards_created) || 0, 0, 'no card create was retried');
     assert.equal(mock.state.cards.filter((c) => c.content === '崩溃前已创建的内容').length, 1, 'provider has exactly one card');
     const ids = readDb(dir, 'SELECT id FROM cards');
     assert.equal(ids.some((row) => row.id === local.card_id), false, 'local placeholder removed');
