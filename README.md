@@ -6,21 +6,20 @@
 
 给 DeepSeek Harness（DSH）的 agent 用的墨墨记忆卡（Markji）插件。它在本地维护一份卡组 / 章节 / 卡片缓存，agent 可以搜索、阅读、新建、修改、归档卡片；所有修改先写入本地队列，再按「先拉取、三方合并、后推送」的顺序同步到云端，冲突单独报告，不影响其他卡片。
 
-只注册 4 个按 `action` 组织的 `markji_*` 工具，只用 Node 内置模块实现，无第三方依赖：`markji_decks`（卡组 / 章节，含章节详情、新建、重命名、排序）、`markji_cards`（列表过滤、读写、语法、归档、移动）、`markji_sync`（同步、进度、状态、失败与冲突）、`markji_file`（文件）。写卡前用 `markji_cards({ action: "syntax_help" })` 查语法，再用 `action=validate` 校验；批量读写用同一工具的 `new_cards`、`updates`、`contents` / `cards`。推送时还会检查正文里的图片 / 音频文件是否可用。
+只注册 4 个按 `action` 组织的 `markji_*` 工具，只用 Node 内置模块实现，无第三方依赖：`markji_decks`（卡组 / 章节，含章节详情、新建、重命名、排序）、`markji_cards`（列表过滤、读写、语法、归档、移动）、`markji_sync`（同步、等待、进度、状态、失败与冲突）、`markji_file`（文件）。写卡前用 `markji_cards({ action: "syntax_help" })` 查语法；`create` / `update` 会在入队前自动校验语法和媒体引用，无需额外调用校验。批量读写用同一工具的 `new_cards` / `updates`。
 
 ## 特性
 
 - **本地缓存**：单个 SQLite 文件 `cache.db`，索引、卡片正文、待推送队列、冲突和同步任务都在一个库里，日常搜索和阅读不请求 API。
-- **统一列表过滤（搜索即过滤）**：`markji_cards` 的 `list`、`markji_decks` 的 `list` / `chapter_list` 使用同一组过滤参数（字段集各自独立），不再有单独的 `search` action：
-  - `query` + `query_mode`：`substring`（默认，子串）、`fuzzy`（近似匹配，容忍少量错字并按相似度排序）、`regex`（JavaScript 正则，`regex_flags` 可设 `imsu`，默认 `i`）或 `predicate`（结构化条件树）。
+- **统一列表过滤（JSON 条件树）**：`markji_cards` 的 `list`、`markji_decks` 的 `list` / `chapter_list` 使用同一个 `filter` 参数（字段集各自独立），没有单独的 `search` action，所有过滤都由 `filter` 完成：
+  - `filter`：JSON 条件树，不是 JS。条件为 `{ field, op, value, case_sensitive?, flags? }`，组合为 `{ all: [...] }` / `{ any: [...] }` / `{ not: {...} }`；op 支持 `eq`、`ne`、`contains`、`starts_with`、`ends_with`、`regex`、`in`、`not_in`、`gt`、`gte`、`lt`、`lte`、`exists`。正则用 `flags` 设置 `imsu`（默认 `i`），`case_sensitive: true` 也可关闭字符串匹配和正则的默认大小写不敏感。`filter` 省略或传 `{}` 表示不过滤。
   - `scope`：卡片支持 `all` / `deck` / `chapter`，章节支持 `all` / `deck`，卡组支持 `all` / `folder`；不传时由 `deck` / `chapter` / `folder_id` 推断，显式冲突会报错。
-  - `fields`：指定 `query` 匹配哪些字段；卡片默认 `text` / `id` / `deck_name` / `chapter_name`，卡组默认 `name` / `description` / `id`，章节默认 `name` / `id`。
   - 每个 list 的字段集独立：卡组只认卡组字段（`name` / `description` / `id`、更新时间、计数等），章节只认章节字段（没有 `description`，也不支持 `deck_name`，按父卡组筛选用 `scope=deck`），卡片保留更宽的条件（`text` / `content` / `cloud` / `status` 等）。不属于该 list 的字段或操作会报 `invalid_argument`，不会跨资源匹配。
-  - `predicate`：JSON 条件树，不是 JS。条件为 `{ field, op, value, case_sensitive?, flags? }`，组合为 `{ all: [...] }` / `{ any: [...] }` / `{ not: {...} }`；op 支持 `eq`、`ne`、`contains`、`starts_with`、`ends_with`、`regex`、`in`、`not_in`、`gt`、`gte`、`lt`、`lte`、`exists`。`predicate` 可与 `query` 同时使用（AND）；`query_mode=predicate` 时必须提供 `predicate`，且不能同时给 `query`。条件只读自有属性，最大嵌套 8 层、最多 64 个节点。
-- **纯文本匹配**：每张卡另存一列去掉格式标记、图片 / 音频标记、data URI 和 base64 的纯文本，`text` 字段只含纯文本，结果干净可读。`fuzzy` 可用 `min_score` 调整阈值；`query` 只放一个短短语（通常 1-3 个词）：`fuzzy` 空格分词时要求各项都近似命中；若 3 个以上词没有任何卡片全命中，会自动取查询里更稀有的词作为锚点，退化为部分匹配：返回 `partial: true`、`fallback_terms` 和每张卡的 `matched_terms`，优先展示命中罕用词的卡片，并在 `hint` 中说明。不要把多个概念硬拼成一个 query。
-- **安全写入**：修改先排队，推送前先拉取远端变更并三方合并，不会用旧数据覆盖云端；冲突按卡片去重，可逐条解决。
-- **语法帮助、批量操作、写前校验与媒体预检**：`markji_cards` 的 `action=syntax_help` 可按格式或全部查询原始 Markji 语法；`action=validate` 支持单条 `content`、多条 `contents` 或按 `cards` 批量校验，只检查正文，不生成或改写内容。`action=get` 一次读取多张卡，`action=create` 的 `new_cards` 可在一次调用中创建跨章节 / 卡组的卡片，`action=update` 的 `updates` 一次排队多张卡的写入；`markji_sync` 推送前再次校验正文，并批量查询 `Pic` / `Audio` 引用的文件 id。语法错误、文件缺失或查询失败都会记录到该卡并保留队列，不会只写一半。
-- **后台同步**：同步任务立即返回句柄，可查进度；进程崩溃或插件重启后用同一句柄续跑，不重复创建云端对象。DSH 加载了 `dsh-tool-jobs` 时，`markji_sync({ action: "start" })` 还会把任务登记为当前会话拥有的 DSH 后台任务，返回 `job_id`；任务出现在「正在运行的后台任务」中，可用 `job_output` 查看，结束后由 DSH 发送完成通知。终止后台任务会在下一个检查点取消同步，任务变为 `interrupted`，仍可 `resume`。
+- **纯文本匹配**：每张卡另存一列去掉格式标记、图片 / 音频标记、data URI 和 base64 的纯文本，`text` 字段只含纯文本，结果干净可读；`content` 保留原始富文本，便于正则在正文上匹配。
+- **安全写入**：修改先排队，推送前先拉取远端变更并三方合并，不会用过期的本地缓存覆盖云端；冲突按卡片去重，可逐条解决。
+- **插件页与加密凭证**：插件详情页可填 Markji API Key，并选择 `cache.db` 目录。Key 只以 AES-256-GCM 密文写入 `cache.db` 的 `secrets` 表；数据密钥由 DSH 凭据服务或仅当前用户可读的 `secret.key` 保存，配置文件和源码里不会出现明文 token。
+- **自动写前校验与媒体预检**：`markji_cards` 的 `action=syntax_help` 可按格式或全部查询原始 Markji 语法；`create` / `update` 在入队前自动校验每条正文，并默认批量查询 `Pic` / `Audio` 引用的文件 id（`checkMediaOnWrite: false` 可跳过媒体查询）。语法错误、文件缺失或查询失败会让该条直接失败且不产生待推送卡，批量中的其他项继续。`markji_sync` 推送前仍保留同一套预检作为最后一道闸。
+- **后台同步**：同步任务立即返回句柄，可查进度；进程崩溃或插件重启后用同一句柄续跑，不重复创建云端对象。DSH 加载了 `dsh-tool-jobs` 时，`markji_sync({ action: "start" })` 还会把任务登记为当前会话拥有的 DSH 后台任务，返回 `job_id`；任务出现在「正在运行的后台任务」中，`job_output` 会随同步进度实时追加输出，结束后由 DSH 发送完成通知；也可以 `markji_sync({ action: "wait", task_id })` 阻塞到该任务结束（可选 `timeout_ms`，超时返回 `task.timed_out: true`）。终止后台任务会在下一个检查点取消同步，任务变为 `interrupted`，仍可 `resume`。
 - **归档与章节操作**：`markji_cards({ action: "archive" })` 把卡片移入同卡组「归档」章节并在正文插入归档说明，重复调用幂等；`markji_decks` 支持章节详情、新建、重命名和排序（provider 不提供章节删除接口）。
 - **多进程安全**：同一台机器的多个 DSH 进程可共用一个缓存目录，写入通过文件锁串行。
 
@@ -60,21 +59,13 @@ plugin_manager set_plugin  target=include:dsh-markji-bridge  enabled=false
 plugin_manager set_plugin  target=include:dsh-markji-bridge  enabled=true
 ```
 
-## 配置 token
+## 配置 API Key 与缓存位置
 
-在 **DSH 主机进程**的环境变量里设置 Markji OpenAPI token（在[墨墨开放平台](https://open.maimemo.com/)获取）：
+在 DSH 的**插件 → 墨墨记忆卡桥接**详情页里填写 Markji OpenAPI Key（在[墨墨开放平台](https://open.maimemo.com/)获取），点「保存并测试」：插件会先调用一次只读接口校验，通过后用 AES-256-GCM 加密写入 `cache.db` 的 `secrets` 表，页面只显示 `hasKey` 和尾 4 位，不回显明文。
 
-```powershell
-# Windows：设置用户环境变量后重启 DSH
-setx MAIMEMO_MARKJI_OPENAPI_TOKEN "<你的 token>"
-```
+同一个插件详情页可以选择 `cache.db` 所在目录：修改时会把现有 `cache.db`（以及 `secret.key`，如果使用文件 DEK）复制到新目录，原目录保留以便回退；需要重启 DSH 生效。
 
-```bash
-# macOS / Linux：写入 shell 配置后重开终端
-export MAIMEMO_MARKJI_OPENAPI_TOKEN="<你的 token>"
-```
-
-token 不要提交到仓库或写进配置文件。插件配置里的 `apiKey` 可以覆盖 token，但会以明文保存在 profile 配置中，一般不需要。
+> 可选引导配置：`cordis.patch.yml` 的 `apiKey`、环境变量 `MAIMEMO_MARKJI_OPENAPI_TOKEN` / `MAIMEMO_OPENAPI_TOKEN` 可作为首次启动的输入；插件启动时会把它们加密写入 `cache.db` 并从进程环境清除。推荐直接在插件详情页配置。不要提交 token。
 
 ## 快速开始
 
@@ -82,21 +73,20 @@ token 不要提交到仓库或写进配置文件。插件配置里的 `apiKey` �
 markji_decks({ action: "list", refresh: true })
 markji_decks({ action: "get", deck: "<deck_id>" })
 markji_decks({ action: "chapter_get", chapter: "<chapter_id>", with_cards: true })
-markji_cards({ action: "list", query: "排序", deck_name: "算法" })
-markji_cards({ action: "list", query: "变量初始话", query_mode: "fuzzy" })
-markji_cards({ action: "list", query: "^SPI\s+时钟", query_mode: "regex", fields: ["text"] })
-markji_cards({ action: "list", scope: "deck", deck: "<deck_id>", predicate: { all: [{ field: "status", op: "eq", value: "dirty" }, { field: "updated_time", op: "gte", value: "2026-10-01" }] } })
+markji_cards({ action: "list", filter: { field: "text", op: "contains", value: "排序" }, deck_name: "算法" })
+markji_decks({ action: "list", filter: { field: "name", op: "contains", value: "算法" } })
+markji_decks({ action: "chapter_list", filter: { field: "name", op: "regex", value: "^SPI\s+时钟" } })
+markji_cards({ action: "list", scope: "deck", deck: "<deck_id>", filter: { all: [{ field: "status", op: "eq", value: "dirty" }, { field: "updated_time", op: "gte", value: "2026-10-01" }] } })
 markji_cards({ action: "get", card: "<card_id>" })
 markji_cards({ action: "get", cards: ["<card_id_1>", "<card_id_2>"] })
 markji_cards({ action: "syntax_help" })
 markji_cards({ action: "syntax_help", format: "picture" })
-markji_cards({ action: "validate", content: "<Markji 富文本>" })
-markji_cards({ action: "validate", cards: ["<card_id_1>", "<card_id_2>"] })
-markji_cards({ action: "validate", contents: ["<Markji 富文本 1>", "<Markji 富文本 2>"] })
+markji_cards({ action: "create", deck: "<deck>", chapter: "<chapter>", new_cards: [{ content: "<Markji 富文本>" }] })
 markji_sync({ action: "start", mode: "auto" })
+markji_sync({ action: "wait", task_id: "<task_id>", timeout_ms: 300000 })
 ```
 
-首次调用会拉取云端数据（卡片多时需要一点时间），之后读操作走本地缓存。状态和进度用 `markji_sync({ action: "state" })` / `markji_sync({ action: "progress" })` 查看；传 `task_id` 时只返回该任务的 `{ task }`，不传时返回 `{ active, tasks }`。若 DSH 加载了 `dsh-tool-jobs`，`start` 还会返回 `job_id`：在 DSH 的后台任务列表里能直接看到进度，任务结束后会自动收到完成通知，也可以用 `job_output` 读取结果。
+首次调用会拉取云端数据（卡片多时需要一点时间），之后读操作走本地缓存。状态和进度用 `markji_sync({ action: "state" })` / `markji_sync({ action: "progress" })` 查看；传 `task_id` 时只返回该任务的 `{ task }`，不传时返回 `{ active, tasks }`。`action: "wait"` 会阻塞到指定任务结束，`timeout_ms` 省略时最多等 30 分钟（与工具超时一致）；超时后返回仍在运行的 `task`，并带 `timed_out: true`。若 DSH 加载了 `dsh-tool-jobs`，`start` 还会返回 `job_id`：在 DSH 的后台任务列表里能直接看到进度，`job_output` 的输出也会按进度实时追加，任务结束后会自动收到完成通知，也可以用 `job_output` 读取最终结果。
 
 ## 批量操作
 
@@ -104,8 +94,6 @@ markji_sync({ action: "start", mode: "auto" })
 
 ```text
 markji_cards({ action: "get", cards: ["<id1>", "<id2>"] })
-markji_cards({ action: "validate", cards: ["<id1>", "<id2>"] })              // 校验已有卡片
-markji_cards({ action: "validate", contents: ["<正文1>", "<正文2>"] })         // 校验未写入的正文
 markji_cards({ action: "create", deck: "<deck>", chapter: "<chapter>", new_cards: [
   { content: "<正文1>" },
   { content: "<正文2>", deck: "<deck2>", chapter: "<chapter2>" },
@@ -118,11 +106,11 @@ markji_cards({ action: "archive", cards: ["<id1>", "<id2>"] })
 markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
 ```
 
-- 单次最多 50 项（多卡读取、语法校验的 `contents` / `cards`、`new_cards`、`updates`）；归档和移动使用非空数组。`action=get` 会去重并保持请求顺序，未知 id 放入 `missing`，不会中断整批。
+- 单次最多 50 项（多卡读取、`new_cards`、`updates`、冲突批量解决）；归档和移动使用非空数组。`action=get` 会去重并保持请求顺序，未知 id 放入 `missing`，不会中断整批。
 - `action=create` 的顶层 `deck` / `chapter` 是默认值，可以省略；每个 `new_cards` 项可写自己的 `deck` / `chapter`，所以一次调用能跨章节 / 卡组。未提供目标的项会逐条报错；每项的 `order` 相对于该项最终的目标章节。
-- 结果逐项列出 `ok` 和错误；写操作不是事务，坏项会被记录，其他项仍会排队。成功项仍需 `markji_sync({ action: "start" })` 推送。
+- 结果逐项列出 `ok`、`warnings` 和错误；写操作不是事务，坏项（语法错误、媒体缺失、目标不存在）不会入队，其他项仍会排队。成功项仍需 `markji_sync({ action: "start" })` 推送。
 - `action=get` 默认不返回冗余的 `text`，需要时传 `include_text: true`。
-- 批量语法检查只做本地语法校验，不查询媒体文件是否存在；`markji_sync` 推送前仍会做媒体预检。
+- `create` / `update` 默认同时做语法和媒体校验；媒体查询失败时该条返回 `media_check_failed`，可重试。`checkMediaOnWrite: false` 可跳过这道额外查询，但 `markji_sync` 推送前仍会检查。
 - 批量输出可能超过 `maxOutputChars`，内容多时请拆小批次。
 
 ## 工具
@@ -132,8 +120,8 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | 工具 | 默认 action | 作用 |
 | --- | --- | --- |
 | `markji_decks` | `list` | 卡组列表 / 详情，章节列表 / 详情 / 新建 / 重命名 / 排序 |
-| `markji_cards` | `list` | 卡片列表过滤、读取、新建、修改、移动、归档、语法帮助与校验 |
-| `markji_sync` | `start` | 启动同步、查看进度 / 插件状态 / 失败、解决冲突 |
+| `markji_cards` | `list` | 卡片列表过滤、读取、新建、修改、移动、归档、语法帮助 |
+| `markji_sync` | `start` | 启动同步、等待任务、查看进度 / 插件状态 / 失败、解决冲突 |
 | `markji_file` | 无（必填） | 上传文件到 Markji 或查询文件信息 |
 
 ### 各 action 一览
@@ -145,71 +133,19 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | `markji_decks` | `chapter_list` | 列出一个或全部卡组的章节 |
 | `markji_decks` | `chapter_get` | 读一个章节，可带卡片摘要 |
 | `markji_decks` | `chapter_create` / `chapter_rename` / `chapter_sort` | 新建 / 重命名 / 排序章节 |
-| `markji_cards` | `list` | 分页、按范围（全库 / 卡组 / 章节）过滤，支持子串、模糊、正则和 `predicate` 条件树；可同时按卡组名 / 章节名 / 更新时间过滤 |
+| `markji_cards` | `list` | 分页、按范围（全库 / 卡组 / 章节）过滤，使用 `filter` JSON 条件树；可同时按卡组名 / 章节名 / 更新时间过滤 |
 | `markji_cards` | `get` | 按 id 读一张或多张卡；未知 id 列入 `missing` |
 | `markji_cards` | `create` | 用 `new_cards` 批量新建，支持跨章节 / 卡组 |
 | `markji_cards` | `update` | 改一张（`card` + `content`）或多张（`updates`） |
 | `markji_cards` | `move` / `archive` | 移动到其他章节 / 归档到「归档」章节 |
-| `markji_cards` | `validate` / `syntax_help` | 校验正文或已有卡片 / 查原始 Markji 语法 |
+| `markji_cards` | `syntax_help` | 查原始 Markji 语法；create/update 自动校验 |
 | `markji_sync` | `start` | 启动后台同步（pull / push / auto，可 resume） |
+| `markji_sync` | `wait` | 等待指定同步任务结束；`timeout_ms` 控制最长等待，超时返回 `task.timed_out: true` |
 | `markji_sync` | `progress` | 查看同步任务进度与历史 |
 | `markji_sync` | `state` | 插件与缓存总览 |
 | `markji_sync` | `failures` | 查看失败卡片、冲突与恢复建议 |
-| `markji_sync` | `resolve` | 解决冲突（keep_local / keep_remote / use_content） |
+| `markji_sync` | `resolve` | 解决一个或批量冲突（keep_local / keep_remote / use_content；`ids` / `items` 最多 50 个） |
 | `markji_file` | `upload` / `query` | 上传文件 / 查询文件信息 |
-
-### 2.4.0：搜索合并为列表过滤
-
-- 移除独立的 `search` action / `markji_search`：所有搜索都通过 `markji_cards` 的 `list`、`markji_decks` 的 `list` / `chapter_list` 完成。
-- 列表 action 新增 `query_mode=predicate` 与 `predicate` 条件树，支持 `all` / `any` / `not`、13 种 op，以及点号路径（如 `cloud.revision`）；条件只能读自有属性，有深度和节点数上限。
-- 新增 `scope` 与 `fields`：可限定全库 / 卡组 / 章节范围以及 `query` 匹配的字段；不传 `scope` 时由 `deck` / `chapter` / `folder_id` 推断，显式冲突会报错。
-- `markji_sync({ action: "progress", task_id })` 只返回 `{ task }`；不传 `task_id` 时仍返回 `{ active, tasks }`。
-- 章节列表统一带 `total`：指定 deck 返回 `{ deck_id, deck_name, chapters, total }`，不指定返回 `{ decks, total }`；过滤生效时省略空卡组分组。
-- 批量操作保持不变：`get` 的 `cards`、`create` 的 `new_cards`、`update` 的 `updates`、`validate` 的 `contents` / `cards`、`move` / `archive` 的 `cards` 仍可一次处理多张卡。
-
-### 2.3.0：精简返回值
-
-列表和同步类工具不再返回调用方通常用不到的环境信息与空字段，减少上下文占用：
-
-- 卡片的 `list` 只返回 `{ id, deck_name, chapter_name, snippet }`，仅当状态不是 `synced` 时才带 `status`；完整正文和时间戳用 `action=get` 读取。返回不再带 `cache` 和 `filters`。
-- 卡组 / 章节列表不再带 `cache`；卡组详情才带 `description` / `updated_time`，章节详情才带 `revision` / `order` / `updated_time`，默认值字段省略。`folders` 只保留 `id` / `name` / `deck_count` / 可选 `parent_id`，卡组通过 `folder_id` 关联。
-- `action=get` 的批量结果改为 `{ cards, missing? }`，不再有 `ok` / `requested` / `found` 和逐项包装。
-- 同步任务只保留有效计数，0 值字段省略；`state` 去掉环境路径与定时器细节，`failures` 去掉重复的全局恢复说明（每项仍有自己的 `recovery`），任务历史最多返回 3 条。
-
-### 2.2.0：搜索支持模糊与正则
-
-`markji_cards` 的列表查询（2.2.0 时由 `search` 提供，2.4.0 起合并为 `list`）新增 `query_mode`：
-
-- `substring`（默认）：大小写不敏感的子串，保持 2.1.0 行为。
-- `fuzzy`：近似匹配，容忍少量错字、插入或删除；结果带 `score`（0-1）并按分数从高到低排序，`min_score` 可调阈值（默认 0.6）。它比较的是整条 query；空格分词时各项都要近似命中，所以应一次搜一个短短语。若 3 个以上词没有全命中，则取最稀有的词作为锚点退回部分匹配（`partial: true`、`fallback_terms`），用 `matched_terms` 标明每张卡命中了哪些词。
-- `regex`：把 `query` 当作 JavaScript 正则，`regex_flags` 支持 `i` / `m` / `s` / `u`（默认 `i`）。
-
-`matched_by` 会标明命中卡片正文还是 id。所有列表 action 共享同一套查询参数；没有结果时会额外返回 `hint`。模糊查询退化到部分匹配时还会返回 `partial: true`、`fallback_terms`，每张卡带 `matched_terms`。
-
-### 2.1.0：同步接入 DSH 后台任务
-
-`markji_sync({ action: "start" })` 的返回值新增可选字段 `job_id`。当 DSH 加载了 `dsh-tool-jobs` 且调用来自一个活动会话时，插件会把同步任务登记为该会话拥有的 DSH 后台任务：任务出现在 DSH 的「正在运行的后台任务」中，进度随同步阶段更新，`job_output` 可读取任务结果，任务结束（完成 / 失败 / 被终止）时由 DSH 发送标准完成通知。
-
-未加载 `dsh-tool-jobs` 或调用不是来自会话时，没有 `job_id`，行为与 2.0.0 相同。终止该 DSH 后台任务会在下一个检查点取消同步：已写入的队列不丢，任务状态变为 `interrupted`，之后可用 `markji_sync({ action: "start", resume: "<task_id>" })` 续跑。`markji_sync` 的 `progress` / `state` / `failures` / `resolve` 仍然可用。
-
-### 2.0.0 迁移：旧工具名
-
-2.0.0 不再注册 1.x 的细粒度工具；旧调用改成一个工具加 `action`。字段基本不变，只有新建批量字段改为 `new_cards`：
-
-| 1.x 工具 | 2.0.0 调用 |
-| --- | --- |
-| `markji_chapters` / `markji_chapters_edit` | `markji_decks` 的 `chapter_list` / `chapter_get` / `chapter_create` / `chapter_rename` / `chapter_sort` |
-| `markji_search` | `markji_cards` 的 `list`（用 `query` / `query_mode` / `predicate` / `fields` / `scope` 过滤） |
-| `markji_card_get` / `markji_cards_get` | `markji_cards` 的 `get` |
-| `markji_card_syntax` | `markji_cards` 的 `validate` 或 `syntax_help` |
-| `markji_card_create` / `markji_cards_create` | `markji_cards` 的 `create`（批量字段为 `new_cards`） |
-| `markji_card_update` | `markji_cards` 的 `update` |
-| `markji_card_archive` / `markji_cards_move` | `markji_cards` 的 `archive` / `move` |
-| `markji_sync_status` | `markji_sync` 的 `progress` |
-| `markji_status` | `markji_sync` 的 `state` |
-| `markji_failures` | `markji_sync` 的 `failures` |
-| `markji_conflict_resolve` | `markji_sync` 的 `resolve` |
-| `markji_file` | 不变（`action` 仍必填） |
 
 ## 工具参数与返回值
 
@@ -217,32 +153,32 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 
 | 工具 / action | 参数 | 返回（主要字段） |
 | --- | --- | --- |
-| `markji_decks` / `list` | `refresh?` `folder_id?` `scope?` `query?` `query_mode?` `predicate?` `fields?` `regex_flags?` `min_score?` | `{folders, decks, total}`；`folders` 为 `{id, name, deck_count, parent_id?}` |
+| `markji_decks` / `list` | `refresh?` `folder_id?` `scope?` `filter?` | `{folders, decks, total}`；`folders` 为 `{id, name, deck_count, parent_id?}` |
 | `markji_decks` / `get` | `deck` `refresh?` | `{deck, chapters}`；详情含 `description` / `updated_time` |
-| `markji_decks` / `chapter_list` | `deck?` `scope?` `refresh?` `query?` `query_mode?` `predicate?` `fields?` `regex_flags?` `min_score?` | 指定 `deck`：`{deck_id, deck_name, chapters, total}`；不指定：`{decks, total}` |
+| `markji_decks` / `chapter_list` | `deck?` `scope?` `refresh?` `filter?` | 指定 `deck`：`{deck_id, deck_name, chapters, total}`；不指定：`{decks, total}` |
 | `markji_decks` / `chapter_get` | `chapter` `deck?` `with_cards?` `refresh?` | `{deck_id, deck_name, chapter, cards?, total?}` |
 | `markji_decks` / `chapter_create` | `deck` `name` `order?` | `{ok, action, chapter_id, deck_id, status, pending, message}` |
 | `markji_decks` / `chapter_rename` | `chapter` `name` `deck?` | `{ok, action, chapter_id, status, pending, message}` |
 | `markji_decks` / `chapter_sort` | `deck` `chapter_ids` | `{ok, action, deck_id, chapters, status, pending, message}` |
-| `markji_cards` / `list` | `scope?` `deck?` `chapter?` `query?` `query_mode?` `predicate?` `fields?` `regex_flags?` `min_score?` `deck_name?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, cards}`；部分匹配再带 `partial` / `fallback_terms` / `hint` |
+| `markji_cards` / `list` | `scope?` `deck?` `chapter?` `filter?` `deck_name?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, cards}`；无结果且传了 `filter` 时带 `hint` |
 | `markji_cards` / `get` | `card?` `cards?`（1-50，去重）`include_text?` | `{cards, missing?}`；`missing` 仅在存在未知 id 时出现 |
-| `markji_cards` / `create` | `new_cards`（1-50；每项 `{content, deck?, chapter?, order?, grammar_version?}`）；顶层 `deck?` `chapter?` 是默认值 | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`；顶层默认值未提供时为 `null` |
-| `markji_cards` / `update` | `card` `content` `grammar_version?`，或 `updates`（1-50，每项 `{card, content, grammar_version?}`） | 单条：`{ok, card_id, status, changed, pending, message}`；批量：`{ok, action, mode, total, updated, unchanged, failed, partial, results}` |
+| `markji_cards` / `create` | `new_cards`（1-50；每项 `{content, deck?, chapter?, order?, grammar_version?}`）；顶层 `deck?` `chapter?` 是默认值 | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`；失败项含 `errors` / `warnings` / `media`，语法或媒体失败不入队 |
+| `markji_cards` / `update` | `card` `content` `grammar_version?`，或 `updates`（1-50，每项 `{card, content, grammar_version?}`） | 单条：`{ok, card_id, status, changed, pending, message, warnings?}`；批量：`{ok, action, mode, total, updated, unchanged, failed, partial, results}`；失败项不入队 |
 | `markji_cards` / `move` | `cards` `to_chapter` `deck?` `order?` | `{ok, moved, to_chapter_id, status, pending, message}` |
 | `markji_cards` / `archive` | `cards`（非空数组） | `{ok, archived, content_updated, already_archived, moved, chapters, status, pending, message}` |
-| `markji_cards` / `validate` | `content` 或 `contents` 或 `cards`（只能一个） | 单条：`{ok, errors, warnings, stats, media}`；批量：`{ok, action, mode, source, total, valid, invalid, missing?, syntax_invalid?, results}` |
 | `markji_cards` / `syntax_help` | `format?` | `{ok, action, format, rules, nesting, formats}` |
 | `markji_sync` / `start` | `mode?: auto/pull/push` `full?` `resume?` | `{task, job_id?, already_running?}`；`job_id` 需要 DSH 后台任务支持 |
+| `markji_sync` / `wait` | `task_id` `timeout_ms?` | `{task}`；超时仍在运行时 `task.timed_out: true` |
 | `markji_sync` / `progress` | `task_id?` | 有 `task_id`：`{task}`；无：`{active, tasks}` |
 | `markji_sync` / `state` | 无 | `{version, configured, cache_file, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
-| `markji_sync` / `failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, truncated?}`；每项自带 `recovery` |
-| `markji_sync` / `resolve` | `id` `strategy: keep_local/keep_remote/use_content` `content?` | `{ok, id, entity, strategy, state, changed}` |
+| `markji_sync` / `failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, batch_arguments, truncated?}`；每个冲突自带单条 `recovery.arguments`、`recovery.batch_arguments`；顶层 `batch_arguments` 可一次解决前 50 个 |
+| `markji_sync` / `resolve` | `id`（单条）；或 `ids` + `strategy`；或 `items: [{id, strategy, content?}]`（≤50，逐条策略） | 单条保持 `{ok, id, entity, strategy, state, changed}`；批量 `{ok, total, resolved, failed, results:[{id, ok, changed, state?, strategy?, error?}]}` |
 | `markji_file` / `upload` | `path` `deck?` | `{file}` |
 | `markji_file` / `query` | `ids` `expires?` | `{files}` |
 
-### 谓词字段
+### `filter` 字段
 
-`predicate` 的 `field` 可用点号读取嵌套自有属性；不同列表允许的根字段：
+`filter` 条件的 `field` 可用点号读取嵌套自有属性；不同列表允许的根字段：
 
 - 卡片：`id`、`deck_id`、`deck_name`、`chapter_id`、`chapter_name`、`text`、`content`、`snippet`、`status`、`grammar_version`、`revision`、`updated_time`、`created_time`、`local`、`pending`、`conflict`、`last_error`、`cloud`（可继续读 `cloud.revision` 等）。
 - 卡组：`id`、`name`、`description`、`folder_id`、`card_count`、`chapter_count`、`is_private`、`source`、`status`、`missing`、`created_time`、`updated_time`。
@@ -250,21 +186,18 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 
 各 list 的字段集按资源独立维护；例如给章节传 `description` / `deck_name`，或给卡组传 `text` / `content`，都会报 `invalid_argument`，不会被静默忽略。
 
-字符串比较默认大小写不敏感（`case_sensitive: true` 可关闭）；数字按数值比较；ISO 时间按字符串比较（同一时区偏移下顺序正确）；未知字段、未知 op、超过深度 / 节点限制都会以 `invalid_argument` 报错。
+字符串比较默认大小写不敏感（`case_sensitive: true` 可关闭）；正则默认 `i`，可用 `flags` 覆盖；数字按数值比较；ISO 时间按字符串比较（同一时区偏移下顺序正确）；未知字段、未知 op、超过深度 / 节点限制都会以 `invalid_argument` 报错。
 
 ### 语法帮助
 
-用 `markji_cards` 的 `validate` / `syntax_help` 两种 action：
+用 `markji_cards` 的 `syntax_help` 查询静态语法：
 
 ```text
 markji_cards({ action: "syntax_help" })                     // 全部格式
 markji_cards({ action: "syntax_help", format: "picture" })  // 只查图片
-markji_cards({ action: "validate", content: "<Markji 富文本>" })         // 校验正文
-markji_cards({ action: "validate", contents: ["<正文1>", "<正文2>"] })   // 批量校验正文
-markji_cards({ action: "validate", cards: ["<id1>", "<id2>"] })          // 批量校验已有卡片
 ```
 
-批量校验时 `content`、`contents`、`cards` 只能传一个；每个结果独立返回，坏项不会中断其他项。`cards` 使用卡片的有效正文（有排队修改时用排队内容）。
+`create` / `update` 在入队前自动校验语法和媒体引用；语法错误会直接返回带行号 / 列号的 `errors`，该条不入队。
 
 `action=syntax_help` 时 `format` 可省略或写 `all`；写 `basic` 只返回通用规则和嵌套限制。支持的格式 id 为 `text-style`、`cloze`、`audio`、`card-ref`、`paragraph`、`choice`、`picture`、`formula`、`answer-line`，也接受对应标签（如 `Pic`）和中文别名（如 `图片`）。帮助内容是静态的，不会检查或改写正文；语法以 [Markji 制卡语法指南](https://tutuji333.github.io/markji-faq/questions/content/card-syntax-guide/) 为准。
 
@@ -372,9 +305,10 @@ Failures = {
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `enabled` | `true` | 是否注册工具并启动自动同步 |
-| `apiKey` | `''` | 可选的 token 覆盖（建议留空，用环境变量） |
+| `apiKey` | `''` | 可选的引导输入；通常用插件详情页保存 Key，这里保持空 |
 | `baseUrl` | `https://open.maimemo.com/open` | API 地址 |
-| `dataDir` | `<home>/.dsh/dsh-markji-bridge` | 缓存目录 |
+| `dataDir` | `<home>/.dsh/dsh-markji-bridge` | 默认缓存目录；插件详情页保存的目录优先 |
+| `checkMediaOnWrite` | `true` | create/update 入队前查询媒体文件；false 可省一次请求 |
 | `grammarVersion` | `3` | 新卡默认 grammar_version |
 | `requestTimeoutMs` | `20000` | 单次请求超时 |
 | `maxRetries` | `3` | 网络错误 / 429 / 5xx 重试次数 |
@@ -390,22 +324,22 @@ Failures = {
 ## 同步与恢复
 
 - 读操作在缓存过期时先做增量拉取；写操作只改本地缓存并排队。
-- `markji_sync mode=auto`：先拉取远端并三方合并，再推送本地队列；推送前一定会先拉取，避免旧数据覆盖远端修改。
-- 推送卡片前会对每条待写内容执行语法校验，并批量调用 `POST /api/v1/markji/files/query` 检查 `Pic#ID/...`、`Pic#ID/...,MID/...` 和 `Audio#...,ID/...` 里的文件 id。缺失的文件不会写入云端，卡片保持待推送状态，`markji_sync({ action: "failures" })` 会给出错误与恢复建议。
-- 冲突不会阻塞其他卡片，处理方式：`keep_local`（保留本地，下次推送覆盖云端）、`keep_remote`（采用云端，丢弃本地改动）、`use_content`（用指定内容替换本地待推送内容）。
-- 同步任务会记录进度与结果，最多保留最近 20 条；进程中断后任务标记为 `interrupted`，用 `markji_sync resume=<task_id>` 续跑。
+- `markji_sync mode=auto`：先拉取远端并三方合并，再推送本地队列；推送前一定会先拉取，避免本地缓存覆盖远端修改。
+- `create` / `update` 入队前会校验语法，并默认批量调用 `POST /api/v1/markji/files/query` 检查 `Pic#ID/...`、`Pic#ID/...,MID/...` 和 `Audio#...,ID/...` 里的文件 id；失败条目不入队，批量其他项继续。推送卡片前仍会做同一套语法 + 媒体预检作为最后一道闸（防止入队后文件被删），失败时卡片保持待推送，`markji_sync({ action: "failures" })` 会给出错误与恢复建议。
+- 冲突不会阻塞其他卡片，处理方式：`keep_local`（保留本地，下次推送覆盖云端）、`keep_remote`（采用云端，丢弃本地改动）、`use_content`（用指定内容替换本地待推送内容）。批量解决用 `markji_sync({ action: "resolve", ids: [...], strategy: "keep_remote" })`，或 `items: [{ id, strategy, content? }]` 混用策略，单次最多 50 个；单条 `id` 调用保持旧结构。
+- 同步任务会记录进度与结果，最多保留最近 20 条；进程中断后任务标记为 `interrupted`，用 `markji_sync resume=<task_id>` 续跑。等待某个任务结束用 `markji_sync({ action: "wait", task_id })`，不要反复轮询。
 - 失败或冲突用 `markji_sync({ action: "failures" })` 查看，处理完再执行 `markji_sync({ action: "start", mode: "push" })`。
 
 ## 性能与行为
 
 - 读操作优先读本地缓存；缓存超过 `pullTtlMs`（默认 10 分钟）或显式 `refresh: true` 时先做增量拉取。
-- 1.0.1 起，未知 id 触发的兜底刷新只拉取“云端标记为变化”的卡组，不再全量拉取所有卡组。实测 5265 张卡 / 82 章节的账号：未知章节重命名约 0.8 秒返回 `unknown_chapter`，未知卡片约 0.3 秒；旧版全量拉取约 12.5 秒。
-- 确实需要全量刷新时显式运行 `markji_sync({ action: "start", mode: "pull", full: true })`；全量拉取是后台任务，先返回 `task`，再用 `markji_sync({ action: "progress" })` 查进度。
+- 未知 id 触发的兜底刷新只拉取“云端标记为变化”的卡组，不会全量拉取所有卡组。实测 5265 张卡 / 82 章节的账号：未知章节重命名约 0.8 秒返回 `unknown_chapter`，未知卡片约 0.3 秒。
+- 确实需要全量刷新时显式运行 `markji_sync({ action: "start", mode: "pull", full: true })`；全量拉取是后台任务，先返回 `task`，再用 `markji_sync({ action: "wait", task_id })` 等待结束，或用 `action: "progress"` 查进度。
 - 写操作只改本地缓存并立即返回，网络请求发生在同步任务或自动同步里。
 - 自动同步：最近一次工具调用后静默 `idleQuietMs`（默认 2 分钟）触发；无待办时每 `autoPullMs`（默认 15 分钟）拉取；失败后按 `retryBackoffMs`（默认 5 分钟）重试。
 - 有未解决冲突时自动推送暂停，但拉取继续。
 - 请求受滑动窗口限流（默认每 10 秒 18 次、每分钟 36 次、每 5 小时 7800 次），并发同步会自动排队。
-- 单张卡内容上限 100000 字符；`markji_cards` 的 `list` 的 `limit` 上限 200（2.4.0 起统一，旧 `search` 的 100 上限已移除），批量入口单次最多 50 项（归档 / 移动不受此限）。
+- 单张卡内容上限 100000 字符；`markji_cards` 的 `list` 的 `limit` 上限 200，批量入口单次最多 50 项（归档 / 移动不受此限）。
 
 ## 错误码与故障排查
 
@@ -413,16 +347,17 @@ Failures = {
 
 | code | 含义与处理 |
 | --- | --- |
-| `not_configured` | 没有可用的 token。设置 `MAIMEMO_MARKJI_OPENAPI_TOKEN` 后完全退出并重启 DSH，让主机进程读到新环境变量。 |
+| `not_configured` | 没有可用的 API Key。打开 DSH 的「插件 → 墨墨记忆卡桥接」详情页，填入 64 位 Key 并「保存并测试」；不需要设置环境变量或改配置文件。 |
 | `unknown_deck` / `unknown_chapter` / `unknown_card` / `unknown_folder` | 本地缓存里没有这个 id。兜底刷新已尝试过；如果对象是在其他设备新建的，执行 `markji_sync({ action: "start", mode: "pull", full: true })` 后再试。 |
 | `invalid_argument` | 参数缺失、类型不对、时间格式不对、`chapter_ids` 没有列全、内容为空或超过 100000 字符等。按消息修正参数。 |
 | `invalid_content` | 卡片内容不合法（例如规范化后为空）。 |
-| `invalid_card_content` | 卡片正文未通过原始 Markji 语法校验。先用 `markji_cards({ action: "validate" })` 看行号 / 列号和错误码，修正后再推送。 |
-| `media_unavailable` | 正文引用的图片 / 遮罩 / 音频文件 id 在 Markji 查不到。先用 `markji_file` 上传，拿到 `file.id` 后更新正文。 |
-| `media_check_failed` | 推送前查询媒体文件失败（网络、鉴权等）。卡片会保留在队列里，恢复后重试 `markji_sync`。 |
+| `invalid_card_content` | 卡片正文未通过原始 Markji 语法校验。`create` / `update` 会直接返回带行号 / 列号的 `errors` 且不入队；修正后重试。 |
+| `media_unavailable` | 正文引用的图片 / 遮罩 / 音频文件 id 在 Markji 查不到。`create` / `update` 会直接失败且不入队；先用 `markji_file` 上传，拿到 `file.id` 后更新正文。 |
+| `media_check_failed` | 查询媒体文件失败（网络、鉴权等）。写入条目不进队列，重试即可；推送阶段的失败会保留队列。 |
+| `secret_corrupt` / `secret_key_invalid` / `secret_key_missing` | `cache.db` 里的密文、`secret.key` 或宿主凭据中的 DEK 无法使用（文件损坏、被替换、换了用户 profile 或 DEK 丢失）。插件详情页重新保存 API Key；插件不会静默换新密钥，也不会回退到环境变量。 |
 | `conflict_open` | 这张卡有未解决冲突。先用 `markji_sync({ action: "resolve" })` 处理。 |
 | `unknown_conflict` | 冲突 id 不存在或已解决。用 `markji_sync({ action: "failures" })` 重新获取当前冲突列表。 |
-| `unknown_task` / `task_not_resumable` | `resume` 的任务 id 不存在，或该任务不是 `interrupted` / 已结束。用 `markji_sync({ action: "progress" })` 查任务状态。 |
+| `unknown_task` / `task_not_resumable` | `resume` / `wait` 的任务 id 不存在，或该任务不是 `interrupted` / 已结束。用 `markji_sync({ action: "progress" })` 查任务状态。 |
 | `deck_mismatch` | 目标章节或卡片不属于指定卡组。检查 id 与 `deck` 参数是否匹配。 |
 | `cache_busy` | 另一个 DSH 进程正持有 `cache.write.lock`。等它结束再重试；不要手工删除活动进程的锁。 |
 | `engine_unavailable` | 插件引擎没有加载完整。停用再启用插件，或重启 DSH。 |
@@ -433,19 +368,19 @@ Failures = {
 
 常见问题：
 
-- **`markji_sync({ action: "state" })` 里 `configured: false`**：DSH 主机进程没有读到 token。Windows 用 `setx` 后必须重启 DSH；WSL / Linux 要在启动 DSH 的同一 shell 里 `export`，再重启 DSH。
+- **`markji_sync({ action: "state" })` 里 `configured: false`**：打开「插件 → 墨墨记忆卡桥接」详情页，填入 Key 并保存；插件详情页显示 `secret_corrupt` / `secret_key_invalid` / `secret_key_missing` 时重新保存一次。可选环境变量在首次启动时读取并清除。
 - **401 / 403**：token 无效、过期或没有 OpenAPI 权限；到开放平台重新生成。不要把 token 写进 `cordis.patch.yml` 或提交到仓库。
-- **首次调用很慢**：首次要拉取全部卡组、章节和卡片；几千张卡通常需要几十秒到几分钟，属正常。用后台任务和 `markji_sync({ action: "progress" })` 观察，不要重复发起。
+- **首次调用很慢**：首次要拉取全部卡组、章节和卡片；几千张卡通常需要几十秒到几分钟，属正常。用后台任务和 `markji_sync({ action: "wait", task_id })` / `action: "progress"` 观察，不要重复发起。
 - **刚在手机 / 网页新建的卡本地找不到**：兜底刷新只拉变化的卡组，若卡组 `updated_time` 没变，执行 `markji_sync({ action: "start", mode: "pull", full: true })`。
 - **自动同步没有推送**：先看 `markji_sync({ action: "failures" })` 是否有开放冲突；有冲突时推送会暂停。解决后执行 `markji_sync({ action: "start", mode: "push" })`。
 - **`cache_busy` 持续出现**：确认是否有另一个 DSH 进程在使用同一 `dataDir`；关闭多余进程。进程崩溃留下的锁会按持有者 pid / 主机名判断后回收。
-- **缓存损坏**：插件会把旧库改名备份并重建，然后重新拉取；看 DSH 日志和 `markji_sync({ action: "state" }).last_error` 确认。
-- **WSL 中使用**：DSH 本身要运行在该 WSL 发行版的 Linux 环境里；token 在启动 DSH 的 shell 中 `export`。SQLite 缓存建议放在 Linux 文件系统（如 `~/.dsh/...`），不要放在 `/mnt/c` 下，避免文件锁和性能问题。
+- **缓存损坏**：插件会把原库改名备份并重建，然后重新拉取；看 DSH 日志和 `markji_sync({ action: "state" }).last_error` 确认。
+- **WSL 中使用**：DSH 本身要运行在该 WSL 发行版的 Linux 环境里；在插件详情页填 Key 即可。SQLite 缓存建议放在 Linux 文件系统（如 `~/.dsh/...`），不要放在 `/mnt/c` 下，避免文件锁和性能问题。
 
 ## 数据与隐私
 
 - 缓存位于 `<dataDir>/cache.db`（默认 `~/.dsh/dsh-markji-bridge`），只保存在本机，除 Markji API 外不发送到任何地方。
-- 插件不把 token 写入缓存或日志；日志中出现的 token 会替换为 `<redacted>`。
+- API Key 只以 AES-256-GCM 密文保存在 `cache.db` 的 `secrets` 表；数据密钥由 DSH 凭据服务（`dsh-markji-bridge/dek`）或仅当前用户可读的 `secret.key` 保存。插件不会把明文 Key 写入缓存、配置文件或日志，日志中的 Key 会替换为 `<redacted>`。
 - 多个 DSH 进程可共享缓存目录，写入用 `cache.write.lock` 串行；不建议跨机器共享。
 - 缓存损坏时会改名保存并重新拉取。
 
@@ -460,27 +395,23 @@ Failures = {
 
 | 环境 | 结果 |
 | --- | --- |
-| Windows + Node 25.2.1 | 2.4.0：单元 114/114，E2E 13/13，入口冒烟 4 个工具；统一列表过滤、`predicate` 与 `progress task_id` 已在真实缓存副本和真实 DSH 中联调。同步、文件 / 图片上传、归档、远端删除冲突、章节删除冲突、崩溃续跑曾在 1.x 真实账号实测；2.1.0 的 DSH 后台任务接入、2.2.0 的模糊 / 正则搜索也在真实 DSH 中验证过。 |
-| WSL2 Ubuntu 26.04（Linux 6.18，Node v22.22.1） | 最后一次验证在 1.6.0：单元 97/97，E2E 13/13，入口冒烟 19 个工具；2.0.0 尚未在 WSL 复跑。 |
-| macOS | 未实机测试；代码只用 Node 内置模块，理论上可用。 |
-
-WSL 验证是在 Linux 环境里直接跑仓库的测试和入口烟测，不是在 WSL 里另装一套 DSH。要在 WSL 里实际使用，DSH 本身也应运行在该发行版中。
-
-2.0.0 把 19 个细粒度工具合并为 4 个按 `action` 组织的工具，并新增卡组详情、章节详情与 `with_cards`；章节新建 / 重命名 / 排序沿用原有引擎。2.1.0 把同步任务接入 DSH 的原生后台任务机制，不再由插件自己发送完成消息。2.2.0 为卡片搜索增加 `fuzzy` 近似匹配与 `regex` 正则查询，并保留默认的 `substring` 行为。2.3.0 精简列表、搜索、读取和同步的返回值，去掉重复环境信息、空字段与逐项包装。2.4.0 把搜索合并进列表过滤：统一的子串 / 模糊 / 正则 / 谓词模式、全库 / 卡组 / 章节范围、`fields` 与 `predicate`，并让 `progress` 支持按 `task_id` 只取单个任务。各 list 的字段集独立维护，只接受本资源的字段。以上由本地单元、入口烟测与 mock HTTP 端到端覆盖；真实账号实测完成于此前版本，本次没有用真实账号重新做媒体查询。
+| Windows + Node 25.2.1 | 单元 155/155，E2E 13/13，入口冒烟 4 个工具；真实 DSH 中核对 `markji_cards` / `markji_decks` 的 `filter`（equality、contains、regex、跨资源字段拒绝、未知字段拒绝），并确认插件设置区、工具注册和缓存读取正常。 |
+| WSL2 Ubuntu 26.04（Linux 6.18，Node v22.22.1） | 未在当前环境实机复跑；代码只使用 Node 内置模块。 |
+| macOS | 未实机测试；代码只使用 Node 内置模块，理论上可用。 |
 
 ## 开发与测试
 
 需要 Node >= 22.13，从仓库源码运行：
 
 ```bash
-node --test "test/*.test.js"   # 单元 / 集成测试（114 项）
+node --test "test/*.test.js"   # 单元 / 集成测试（155 项）
 node test/e2e-mock.mjs         # mock 服务端端到端（13 项）
 node test/index-smoke.mjs      # 入口烟测（4 个工具）
 ```
 
 另有一套不随仓库发布的内部独立验证集，用于发布前交叉检查；公开仓库只包含上面列出的测试。
 
-测试需要从本仓库源码运行。主要文件：`index.js`（入口与配置）、`lib/api.js`（HTTP 客户端）、`lib/store.js`（缓存与写锁）、`lib/sync.js`（同步引擎）、`lib/search.js`（子串 / 模糊 / 正则匹配）、`lib/predicate.js`（结构化谓词）、`lib/jobs.js`（DSH 后台任务桥接）、`lib/plain-text.js`（纯文本转换）、`lib/card-syntax.js`（原始语法校验）、`lib/tools.js`（工具定义）。模块契约见 [DESIGN.md](./DESIGN.md)。
+测试需要从本仓库源码运行。主要文件：`index.js`（入口与配置）、`lib/api.js`（HTTP 客户端）、`lib/store.js`（缓存、写锁与 secrets 表）、`lib/sync.js`（同步引擎）、`lib/filter.js`（JSON 条件树与正则匹配）、`lib/jobs.js`（DSH 后台任务桥接）、`lib/plain-text.js`（纯文本转换）、`lib/card-syntax.js`（原始语法校验）、`lib/preflight.js`（写入前语法 + 媒体预检）、`lib/secret.js`（AES-256-GCM）、`lib/settings.js`（设置 RPC）、`client.js`（插件详情页配置区）、`lib/tools.js`（工具定义）。模块契约见 [DESIGN.md](./DESIGN.md)。
 
 ## 许可
 

@@ -26,6 +26,8 @@ import { createClient } from './lib/api.js';
 import { createStore } from './lib/store.js';
 import { createEngine } from './lib/sync.js';
 import { registerTools, TOOL_NAMES } from './lib/tools.js';
+import { createSecretBox } from './lib/secret.js';
+import { createSettings, readSettingsFile, registerSettingsRoute, settingsFilePath } from './lib/settings.js';
 
 /** Host services this plugin needs before apply() runs. */
 export const inject = ['tools'];
@@ -47,6 +49,10 @@ export const CONFIG_DEFAULTS = Object.freeze({
   autoPullMs: 900000,
   retryBackoffMs: 300000,
   maxOutputChars: 20000,
+  // Validate syntax and media references before queueing a create/update. The
+  // push path still checks media as a final gate; set false to skip the extra
+  // queryFiles round-trip during writes.
+  checkMediaOnWrite: true,
 });
 
 const FIVE_MINUTES_MS = 300000;
@@ -138,8 +144,9 @@ export function migrateLegacyCache(legacyDir, targetDir, log) {
 /**
  * Normalize the row config into the camelCase object passed to the client,
  * store, engine and tools. Invalid numbers are clamped and unknown keys are
- * ignored; an empty apiKey falls back to MAIMEMO_MARKJI_OPENAPI_TOKEN
- * (legacy: MAIMEMO_OPENAPI_TOKEN).
+ * ignored. The encrypted cache key is authoritative; only when it is absent is
+ * the legacy config apiKey / MAIMEMO_MARKJI_OPENAPI_TOKEN / old
+ * MAIMEMO_OPENAPI_TOKEN read once for migration.
  */
 export function readConfig(raw) {
   const source = raw !== null && typeof raw === 'object' ? raw : {};
@@ -167,6 +174,7 @@ export function readConfig(raw) {
     autoSync: readFlag(source.autoSync, CONFIG_DEFAULTS.autoSync),
     idleCheckMs: clampInt(source.idleCheckMs, 1000, 3600000, CONFIG_DEFAULTS.idleCheckMs),
     idleQuietMs: clampInt(source.idleQuietMs, 0, DAY_MS, CONFIG_DEFAULTS.idleQuietMs),
+    checkMediaOnWrite: readFlag(source.checkMediaOnWrite, CONFIG_DEFAULTS.checkMediaOnWrite),
     autoPullMs: clampInt(source.autoPullMs, 1000, 30 * DAY_MS, CONFIG_DEFAULTS.autoPullMs),
     retryBackoffMs: clampInt(source.retryBackoffMs, 0, DAY_MS, CONFIG_DEFAULTS.retryBackoffMs),
     maxOutputChars: clampInt(source.maxOutputChars, 2000, 200000, CONFIG_DEFAULTS.maxOutputChars),
@@ -184,9 +192,18 @@ function errorMessage(error) {
  * API token is redacted as a last line of defense; it is never logged by code.
  */
 function createLogger(apiKey) {
-  const secret = typeof apiKey === 'string' ? apiKey.trim() : '';
-  const redact = (text) => (secret.length >= 8 ? text.split(secret).join('<redacted>') : text);
-  return function log(level, message) {
+  const secrets = new Set();
+  const addSecret = (value) => {
+    const text = typeof value === 'string' ? value.trim() : '';
+    if (text.length >= 8) secrets.add(text);
+  };
+  addSecret(apiKey);
+  const redact = (text) => {
+    let out = text;
+    for (const secret of secrets) out = out.split(secret).join('<redacted>');
+    return out;
+  };
+  function log(level, message) {
     try {
       const text = typeof message === 'string' ? message : String(message);
       const method = typeof console[level] === 'function' ? console[level] : console.log;
@@ -194,7 +211,9 @@ function createLogger(apiKey) {
     } catch (error) {
       /* logging is best effort */
     }
-  };
+  }
+  log.addSecret = addSecret;
+  return log;
 }
 
 /**
@@ -206,6 +225,11 @@ function createLogger(apiKey) {
  */
 export function apply(ctx, rawConfig) {
   const config = readConfig(rawConfig);
+  const defaultDir = defaultDataDir();
+  const savedSettings = readSettingsFile(settingsFilePath(defaultDir));
+  if (typeof savedSettings.dataDir === 'string' && savedSettings.dataDir.trim() !== '') {
+    config.dataDir = resolveDataDir(savedSettings.dataDir);
+  }
   const log = createLogger(config.apiKey);
   if (config.enabled === false) {
     log('info', 'disabled by config (enabled:false); registering nothing');
@@ -231,8 +255,16 @@ export function apply(ctx, rawConfig) {
 
   return ctx.effect(() => {
     const limiter = createLimiter({ log });
+    const credentials = typeof ctx.get === 'function' ? ctx.get('credentials') : null;
+    const secretBox = createSecretBox({ dataDir: config.dataDir, credentials, log });
+    const runtime = { apiKey: '', source: null, keyError: null };
+    let markKeyReady = null;
+    const keyReady = new Promise((resolve) => {
+      markKeyReady = resolve;
+    });
     const client = createClient({
-      apiKey: config.apiKey,
+      apiKey: '',
+      apiKeyReady: keyReady,
       baseUrl: config.baseUrl,
       timeoutMs: config.requestTimeoutMs,
       maxRetries: config.maxRetries,
@@ -241,16 +273,97 @@ export function apply(ctx, rawConfig) {
     });
     // One-time migration path for a cache written by an earlier local build under
     // the old directory name. An explicit dataDir is never touched.
-    if (config.dataDir === defaultDataDir()) {
+    if (config.dataDir === defaultDir) {
       migrateLegacyCache(legacyDataDir(), config.dataDir, log);
     }
     const store = createStore({ dataDir: config.dataDir, log });
     const engine = createEngine({ client, store, config, log });
+    const setRuntimeKey = (value) => {
+      const key = typeof value === 'string' ? value.trim() : '';
+      runtime.apiKey = key;
+      runtime.keyError = null;
+      client.setApiKey(key);
+      log.addSecret(key);
+    };
+
+    function clearLegacyEnv() {
+      try {
+        for (const name of ['MAIMEMO_MARKJI_OPENAPI_TOKEN', 'MAIMEMO_OPENAPI_TOKEN']) {
+          if (process.env && Object.prototype.hasOwnProperty.call(process.env, name)) delete process.env[name];
+        }
+      } catch { /* environment may be read-only */ }
+    }
+
+    async function initializeCredentials() {
+      await store.load();
+      const encrypted = await store.getSecret('api_key');
+      if (typeof encrypted === 'string' && encrypted !== '') {
+        // The encrypted key is authoritative; a stale environment token must not
+        // linger in the Host process after the migration.
+        clearLegacyEnv();
+        let plain;
+        try {
+          plain = await secretBox.decrypt(encrypted);
+        } catch (error) {
+          runtime.keyError = error && error.code ? error.code : 'secret_corrupt';
+          log('error', 'stored API Key could not be decrypted (' + errorMessage(error) + '); open the plugin page (Plugins -> dsh-markji-bridge) and save it again');
+          return;
+        }
+        if (!/^[0-9a-fA-F]{64}$/.test(plain)) {
+          runtime.keyError = 'secret_invalid';
+          log('error', 'stored API Key has an invalid format; open the plugin page (Plugins -> dsh-markji-bridge) and save it again');
+          return;
+        }
+        runtime.source = secretBox.source;
+        setRuntimeKey(plain);
+        log('info', 'API Key loaded from encrypted cache.db (DEK source: ' + String(secretBox.source) + ')');
+        return;
+      }
+      const legacy = typeof config.apiKey === 'string' ? config.apiKey.trim() : '';
+      if (legacy !== '') {
+        let migrationError = null;
+        if (/^[0-9a-fA-F]{64}$/.test(legacy)) {
+          try {
+            const cipher = await secretBox.encrypt(legacy);
+            await store.setSecret('api_key', cipher);
+            runtime.source = secretBox.source;
+            log('info', 'migrated the legacy API Key into encrypted cache.db');
+          } catch (error) {
+            migrationError = error && error.code ? error.code : 'secret_unavailable';
+            log('warn', 'could not encrypt the legacy API Key; keeping it in memory only: ' + errorMessage(error));
+          }
+        } else {
+          migrationError = 'secret_invalid';
+          log('warn', 'legacy API Key is not 64 hex characters; it is used in memory but not persisted');
+        }
+        setRuntimeKey(legacy);
+        if (migrationError !== null) runtime.keyError = migrationError;
+        clearLegacyEnv();
+        return;
+      }
+      setRuntimeKey('');
+    }
+
+    const credentialsReady = initializeCredentials()
+      .catch((error) => {
+        runtime.keyError = error && error.code ? error.code : 'secret_unavailable';
+        log('error', 'could not initialize the API Key: ' + errorMessage(error));
+      })
+      .finally(() => {
+        if (typeof markKeyReady === 'function') markKeyReady();
+      });
+
     let disposeTools = null;
     try {
       // The client is passed in addition to the documented three dependencies so
       // markji_file can upload/query through the same rate-limited client.
-      disposeTools = registerTools(ctx, { engine, config, log, client });
+      disposeTools = registerTools(ctx, {
+        engine,
+        config,
+        log,
+        client,
+        checkMediaOnWrite: config.checkMediaOnWrite,
+      });
     } catch (error) {
       try {
         if (engine !== null && typeof engine.stop === 'function') void engine.stop();
@@ -261,14 +374,32 @@ export function apply(ctx, rawConfig) {
       throw error;
     }
 
-    // Do not block apply(): the first tool call awaits engine.ready().
-    void Promise.resolve()
-      .then(() => engine.start())
+    const settingsHost = createSettings({
+      store,
+      secretBox,
+      client,
+      engine,
+      config,
+      defaultDataDir: defaultDir,
+      currentDataDir: config.dataDir,
+      getApiKey: () => runtime.apiKey,
+      setApiKey: setRuntimeKey,
+      getKeyError: () => runtime.keyError,
+      keyReady,
+      log,
+    });
+    const disposeSettingsRoute = registerSettingsRoute(ctx, settingsHost);
+
+    // Wait for the encrypted key before the first network call or auto-sync.
+    void credentialsReady
+      .then(() => {
+        if (runtime.apiKey === '' && runtime.keyError === null) {
+          log('warn', 'no Markji API Key configured; open Plugins -> dsh-markji-bridge and save the key on the plugin page. cached reads still work and cloud calls fail with not_configured');
+        }
+        return engine.start();
+      })
       .catch((error) => log('error', 'engine start failed: ' + errorMessage(error)));
 
-    if (config.apiKey === '') {
-      log('warn', 'no Markji token configured; set MAIMEMO_MARKJI_OPENAPI_TOKEN or apiKey in the plugin config. cached reads still work and cloud calls fail with not_configured');
-    }
     log(
       'info',
       'ready: ' + TOOL_NAMES.length + ' markji tools, auto-sync ' +
@@ -284,6 +415,13 @@ export function apply(ctx, rawConfig) {
     return async function cleanup() {
       if (closed) return;
       closed = true;
+      if (typeof disposeSettingsRoute === 'function') {
+        try {
+          disposeSettingsRoute();
+        } catch (error) {
+          log('warn', 'settings route teardown failed: ' + errorMessage(error));
+        }
+      }
       if (typeof disposeTools === 'function') {
         try {
           disposeTools();
@@ -303,5 +441,6 @@ export function apply(ctx, rawConfig) {
       }
       log('info', 'disposed');
     };
+
   }, 'dsh-markji-bridge');
 }

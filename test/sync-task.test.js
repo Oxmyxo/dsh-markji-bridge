@@ -132,6 +132,30 @@ test('startSync returns a handle immediately and reports progress', async () => 
   }
 });
 
+test('waitForTask flags a task that is still running at the timeout', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'markji-task-'));
+  const mock = await startMockMarkji({ token: 'task-token-timeout' });
+  let engine = null;
+  let store = null;
+  try {
+    mock.newDeck('超时牌组', { chapters: ['甲'] });
+    ({ engine, store } = makeEngine(dir, mock, { delayListChaptersMs: 250 }));
+    await engine.ready();
+    const started = await engine.startSync({ mode: 'pull', full: true });
+    const pending = await engine.waitForTask(started.task.task_id, 20);
+    assert.equal(pending.status, 'running');
+    assert.equal(pending.timed_out, true, 'a timeout while running is explicit');
+    const done = await engine.waitForTask(started.task.task_id, 20000);
+    assert.equal(done.status, 'completed', JSON.stringify(done.error));
+    assert.equal(done.timed_out, undefined, 'the terminal view has no timeout flag');
+  } finally {
+    if (engine) await engine.stop();
+    if (store) await store.close();
+    await mock.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('a task left running by a dead host becomes interrupted and resumes', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'markji-task-'));
   const mock = await startMockMarkji({ token: 'task-token-2' });

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerTools } from '../lib/tools.js';
 
-test('markji_cards action=list forwards query, predicate and scope filters', async () => {
+test('markji_cards action=list forwards only the filter tree', async () => {
   const registered = new Map();
   let payload = null;
   const engine = {
@@ -27,55 +27,46 @@ test('markji_cards action=list forwards query, predicate and scope filters', asy
   try {
     const tool = registered.get('markji_cards');
     assert.ok(tool);
-    await tool.execute(
-      {
-        action: 'list',
-        scope: 'deck',
-        deck: 'd1',
-        query: '变量初始话',
-        query_mode: 'fuzzy',
-        min_score: 0.7,
-        fields: ['text', 'id'],
-        predicate: { field: 'status', op: 'eq', value: 'synced' },
-      },
-      { agent: { id: 'session' }, callId: 'call' },
-    );
-    assert.deepEqual(payload, {
-      scope: 'deck',
-      deck: 'd1',
-      query: '变量初始话',
-      query_mode: 'fuzzy',
-      min_score: 0.7,
-      fields: ['text', 'id'],
-      predicate: { field: 'status', op: 'eq', value: 'synced' },
-    });
+    assert.equal(tool.parameters.properties.filter.type, 'object');
+    for (const removed of ['query', 'query_mode', 'predicate', 'fields', 'regex_flags', 'min_score']) {
+      assert.equal(tool.parameters.properties[removed], undefined, removed);
+    }
 
+    const filter = { field: 'status', op: 'eq', value: 'synced' };
     await tool.execute(
-      { action: 'list', query: 'spi', query_mode: 'regex', regex_flags: 'im' },
+      { action: 'list', scope: 'deck', deck: 'd1', filter },
       { agent: { id: 'session' }, callId: 'call' },
     );
-    assert.deepEqual(payload, {
-      query: 'spi',
-      query_mode: 'regex',
-      regex_flags: 'im',
-    });
+    assert.deepEqual(payload, { scope: 'deck', deck: 'd1', filter });
+
+    const second = { any: [{ field: 'id', op: 'eq', value: 'k1' }, { field: 'text', op: 'contains', value: 'spi' }] };
+    await tool.execute(
+      { action: 'list', filter: second },
+      { agent: { id: 'session' }, callId: 'call' },
+    );
+    assert.deepEqual(payload, { filter: second });
 
     await assert.rejects(
-      tool.execute({ action: 'search', query: 'spi' }, { agent: { id: 'session' } }),
+      tool.execute({ action: 'search', filter }, { agent: { id: 'session' } }),
       /action.*must be one of/,
     );
     await assert.rejects(
-      tool.execute({ action: 'list', query: 'spi', query_mode: 'wildcard' }, { agent: { id: 'session' } }),
-      /query_mode/,
+      tool.execute({ action: 'list', query: 'spi' }, { agent: { id: 'session' } }),
+      /"query" is no longer supported/,
     );
     await assert.rejects(
-      tool.execute({ action: 'list', query: 'spi', query_mode: 'fuzzy', min_score: 2 }, { agent: { id: 'session' } }),
-      /min_score/,
+      tool.execute({ action: 'list', query_mode: 'fuzzy' }, { agent: { id: 'session' } }),
+      /"query_mode" is no longer supported/,
+    );
+    await assert.rejects(
+      tool.execute({ action: 'list', filter: 'spi' }, { agent: { id: 'session' } }),
+      /filter.*must be an object/,
     );
   } finally {
     dispose();
   }
 });
+
 test('markji_decks list and chapter_list forward filters', async () => {
   const registered = new Map();
   const calls = [];
@@ -94,29 +85,27 @@ test('markji_decks list and chapter_list forward filters', async () => {
   const dispose = registerTools(ctx, { engine, config: { maxOutputChars: 20000 }, log: () => {} });
   try {
     const tool = registered.get('markji_decks');
+    const deckFilter = { field: 'card_count', op: 'gte', value: 2 };
     await tool.execute(
-      { action: 'list', scope: 'folder', folder_id: 'f1', query: 'c++', query_mode: 'predicate', predicate: { field: 'card_count', op: 'gte', value: 2 }, fields: ['name'] },
+      { action: 'list', scope: 'folder', folder_id: 'f1', filter: deckFilter },
       { agent: { id: 'session' } },
     );
     assert.deepEqual(calls[0], ['listDecks', {
       folder_id: 'f1',
       scope: 'folder',
-      query: 'c++',
-      query_mode: 'predicate',
-      predicate: { field: 'card_count', op: 'gte', value: 2 },
-      fields: ['name'],
+      filter: deckFilter,
       refresh: false,
     }]);
+
+    const chapterFilter = { field: 'name', op: 'regex', value: 'spi' };
     await tool.execute(
-      { action: 'chapter_list', scope: 'deck', deck: 'd1', query: 'spi', query_mode: 'regex', regex_flags: 'i' },
+      { action: 'chapter_list', scope: 'deck', deck: 'd1', filter: chapterFilter },
       { agent: { id: 'session' } },
     );
     assert.deepEqual(calls[1], ['listChapters', {
       deck: 'd1',
       scope: 'deck',
-      query: 'spi',
-      query_mode: 'regex',
-      regex_flags: 'i',
+      filter: chapterFilter,
       refresh: false,
     }]);
   } finally {

@@ -69,7 +69,7 @@ function fixtureCache() {
   };
 }
 
-test('search and card views use plain text, not base64 or formatting tags', async () => {
+test('filter and card views use plain text, not base64 or formatting tags', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'markji-plain-'));
   const store = createStore({ dataDir: dir, log: () => {} });
   await store.load();
@@ -83,15 +83,15 @@ test('search and card views use plain text, not base64 or formatting tags', asyn
   });
   await engine.ready();
   try {
-    for (const query of ['base64', 'iVBORw0', 'T#B#', 'Pic#ID']) {
-      assert.equal((await engine.listCards({ query })).total, 0, 'query must not match media/markup: ' + query);
-      assert.equal((await engine.listCards({ query })).total, 0, 'listCards must not match media/markup: ' + query);
+    for (const value of ['base64', 'iVBORw0', 'T#B#', 'Pic#ID']) {
+      const result = await engine.listCards({ filter: { field: 'text', op: 'contains', value } });
+      assert.equal(result.total, 0, 'filter must not match media/markup: ' + value);
     }
-    const hit = await engine.listCards({ query: '关键词' });
+    const hit = await engine.listCards({ filter: { field: 'text', op: 'contains', value: '关键词' } });
     assert.equal(hit.total, 1);
     assert.equal(hit.cards[0].id, 'k1');
     assert.doesNotMatch(hit.cards[0].snippet, /base64|T#B#|Pic#ID/);
-    const listed = await engine.listCards({ query: '答案' });
+    const listed = await engine.listCards({ filter: { field: 'text', op: 'contains', value: '答案' } });
     assert.equal(listed.total, 1);
     assert.doesNotMatch(listed.cards[0].snippet, /base64|T#B#|Pic#ID/);
     const detail = await engine.getCard({ card: 'k1' });

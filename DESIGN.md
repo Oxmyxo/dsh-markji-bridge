@@ -8,7 +8,7 @@ aborting other cards, then pushes local edits.
 
 Status: implementation contract. Every module must match the signatures below exactly.
 The package directory is installed with plugin_manager action=install_bundle. Package and
-bundle name: dsh-markji-bridge; the 17 agent tool names are markji_*.
+bundle name: dsh-markji-bridge; four action-based agent tools are markji_*.
 
 ## Environment facts (verified 2026-10-22)
 
@@ -36,13 +36,18 @@ test/api.test.js, test/rate-limit.test.js, test/live-read.mjs | api-client | tes
 lib/plain-text.js | Lead | rich-text -> searchable plain text (memoized, versioned)
 lib/card-syntax.js | tools-layer | raw Markji syntax validator (no compiler or editor)
 test/card-syntax.test.js | tools-layer | raw syntax validation and media extraction tests
-lib/store.js | cache-sync | cache persistence (schema v4: cards.text)
+lib/store.js | cache-sync | cache persistence (schema v4: cards.text + secrets table)
 lib/sync.js | cache-sync | pull/merge/push engine, unified list filters/views
-lib/search.js | cache-sync | substring / fuzzy / regex query matcher (pure, no cache access)
-lib/predicate.js | cache-sync | safe JSON predicate compiler (conditions, all/any/not, field allow-list)
-lib/jobs.js | cache-sync | bridge a sync task to a DSH background job (progress, settle, cancel)
-test/sync-task.test.js, test/jobs.test.js, test/search.test.js, test/predicate.test.js, test/list-filter.test.js, test/tool-search.test.js, test/verify/*.test.js | cache-sync / tools-layer / verifier | task, job bridge, filters + store/merge/push tests
+lib/filter.js | cache-sync | safe JSON filter-tree + regex compiler (conditions, all/any/not, field allow-list)
+lib/jobs.js | cache-sync | bridge a sync task to a DSH background job (live progress output, settle, cancel)
+test/sync-task.test.js, test/jobs.test.js, test/filter.test.js, test/card-filter.test.js, test/list-filter.test.js, test/tool-filter.test.js, test/verify/*.test.js | cache-sync / tools-layer / verifier | task, job bridge, filters + store/merge/push tests
 index.js, lib/tools.js, package.json, cordis.patch.yml, locale/*.json, icon.svg | tools-layer | entry + tools + manifest
+lib/secret.js | Lead | AES-256-GCM secret box + DEK sources
+lib/settings.js | Lead | settings status/RPC + host route
+client.js | Lead | plugin-page configuration section (API Key, cache.db directory)
+lib/preflight.js | tools-layer | syntax + media preflight shared by create/update and push
+test/secret.test.js, test/settings.test.js, test/no-secret.test.js | Lead | crypto, RPC, secret-scan tests
+.githooks/pre-commit | Lead | staged-file secret guard
 test/e2e-mock.mjs, test/mock-server.mjs | Lead | HTTP mock end-to-end
 test/verify/** | verifier | independent checks
 
@@ -111,9 +116,10 @@ Live payload notes (differ from the YAML doc, follow the live data):
 
 key | default | meaning
 enabled | true | false registers nothing
-apiKey | '' | optional Bearer token override; fallback env MAIMEMO_MARKJI_OPENAPI_TOKEN (legacy MAIMEMO_OPENAPI_TOKEN); empty -> tools report not configured
+apiKey | '' | legacy migration override only; normally the encrypted key in cache.db (plugin page); env MAIMEMO_MARKJI_OPENAPI_TOKEN / MAIMEMO_OPENAPI_TOKEN is read once during migration, then cleared; empty -> tools report not configured
 baseUrl | https://open.maimemo.com/open | no trailing slash
-dataDir | '' | cache directory; empty -> <homedir>/.dsh/dsh-markji-bridge
+dataDir | '' | default cache directory; empty -> <homedir>/.dsh/dsh-markji-bridge. A saved settings.json dataDir wins and is applied at startup
+checkMediaOnWrite | true | create/update query Pic/Audio file ids before queueing; false skips that extra request
 grammarVersion | 3 | default for new cards
 requestTimeoutMs | 20000 | per HTTP attempt
 maxRetries | 3 | retries for network/429/5xx
@@ -155,10 +161,15 @@ snapshot().waitMs = estimated wait before the next acquire can start.
       // fields: code, status, retriable, details
     }
 
-    export function createClient({ apiKey, baseUrl, timeoutMs, maxRetries, limiter, fetchImpl, log })
+    export function createClient({ apiKey, apiKeyReady, baseUrl, timeoutMs, maxRetries, limiter, fetchImpl, log })
     // fetchImpl defaults to globalThis.fetch; log(level, message) optional.
+    // apiKey may be '' at construction; apiKeyReady (optional Promise) is awaited before the
+    // first request so index.js can decrypt the key asynchronously. Normal writes call setApiKey.
     // returns {
-    //   configured: boolean,
+    //   configured: boolean,             // dynamic getter
+    //   apiKeyReady?: Promise<void>,
+    //   setApiKey(next): void,           // update without recreating the client
+    //   validateApiKey(candidate): Promise<void>, // probe a candidate, restore on failure
     //   listFolders(): Promise<folder[]>,
     //   listDecksPage({ offset, limit, folder_id }): Promise<{ decks, total }>,
     //   listAllDecks({ pageSize }): Promise<deck[]>,   // follows total, hard guard 100 pages
@@ -184,7 +195,10 @@ Behavior:
 - Retry network errors, timeouts, 429, 408, 5xx, up to maxRetries with exponential backoff
   500ms*2^n plus jitter, honoring Retry-After (seconds) when present. Other 4xx: throw immediately.
 - Non-JSON / missing data -> MarkjiError code bad_response, retriable false, body snippet in details.
-- Empty/absent apiKey -> configured false; every method throws MarkjiError code not_configured.
+- Empty/absent apiKey -> configured false; every method throws MarkjiError code not_configured
+  with a hint to open the dsh-markji-bridge plugin page (Plugins -> dsh-markji-bridge). setApiKey updates the value used by
+  later requests; validateApiKey probes listDecksPage with the candidate and restores the previous
+  key on failure (it never persists).
 - uploadFile: read file with node:fs/promises; infer mime from extension (png/jpg/jpeg/gif/webp/
   mp3/wav/ogg/m4a/mp4/svg) else application/octet-stream; build FormData with
   new Blob([bytes], { type }), filename basename; append deck_id when given; do not set
@@ -198,6 +212,9 @@ Behavior:
 ## lib/store.js
 
     export const CACHE_VERSION = 4;
+    // The SQLite file also has a secrets(key TEXT PRIMARY KEY, value TEXT NOT NULL) table,
+    // outside the JSON Cache shape. getSecret/setSecret/deleteSecret are part of the store API.
+    // clearAllRows() keeps secrets so a cache reset does not destroy the API Key.
     export function emptyCache(): Cache;
     export function createStore({ dataDir, log, clock = Date.now, saveDebounceMs = 400 })
     // returns {
@@ -206,7 +223,9 @@ Behavior:
     //   load(): Promise<Cache>,       // idempotent; migrates cache.json / v2, recovers corrupt db
     //   flush(): Promise<void>,       // schedule debounced save
     //   saveNow(): Promise<void>,     // force save + await; coalesces concurrent calls
-    //   stats(): { path, data_dir, bytes, db_bytes, content_bytes, content_files, decks,
+    //   getSecret(key): Promise<string|null>, setSecret(key, value): Promise<void>,
+   deleteSecret(key): Promise<void>,
+   stats(): { path, data_dir, bytes, db_bytes, content_bytes, content_files, decks,
     //              chapters, cards, conflicts, dirtyCards, loadedAt, savedAt, saveError },
     //   markDirty(),
     //   close(): Promise<void>,       // flush + close the SQLite handle (plugin teardown/tests)
@@ -220,7 +239,7 @@ Behavior:
 Single SQLite file (index + card content; no cache.json and no per-card files):
 
 - <dataDir>/cache.db is one SQLite database (node:sqlite DatabaseSync, builtin). SQL tables:
-  meta / folders / decks / chapters / cards / moves / conflicts / tasks. Every record is stored
+  meta / folders / decks / chapters / cards / moves / conflicts / tasks / secrets. Every record is stored
   as JSON in a data column except card content, which has dedicated columns on cards:
   content TEXT NOT NULL, text TEXT NOT NULL DEFAULT '' (derived plain text, see plain-text.js),
   base_content TEXT NULL, pending_content TEXT NULL, content_hash TEXT, content_bytes INTEGER.
@@ -331,6 +350,43 @@ in-memory object above is the only shape sync.js sees.
 Local id format: local_ + 12 lowercase hex chars, generated with node:crypto randomUUID
 (fallback counter). Conflict id: cf_ + incrementing integer stored in meta.conflict_seq.
 
+## lib/secret.js and lib/settings.js
+
+secret.js provides the API Key envelope; settings.js provides the configuration backend and
+host route behind the bundle's plugin page. Both are Host-only and use Node builtins only.
+
+    createSecretBox({ dataDir, credentials, log, clock? })
+    // format: v1:<iv_b64>:<tag_b64>:<ciphertext_b64> (AES-256-GCM, 12-byte IV, 32-byte key)
+    // source: 'credentials' | 'sidecar'
+    // encrypt(plaintext): Promise<string>; decrypt(envelope): Promise<string>
+    // rotate(): Promise<{ source }>; removeSidecar(): Promise<void>
+    createSettings({ store, secretBox, client, engine, config, defaultDataDir,
+                     currentDataDir, getApiKey, setApiKey, getKeyError?, keyReady?, log })
+    // status() -> key {hasKey, tail, source, error}, cache_file, cache, last_sync,
+    //             data_dir {active, default, config, saved, restart_required}
+    // testApiKey({token}) -> validateApiKey probe, never persist
+    // setApiKey({token}) -> validate + encrypt into store secret 'api_key' + runtime setApiKey
+    // clearApiKey() -> delete secret + runtime clear
+    // setDataDir({dataDir}) -> active sync check, reject system/relative/non-empty target,
+    //   copy cache.db + -wal/-shm + secret.key, write settings.json {dataDir}, restart_required
+    registerSettingsRoute(ctx, settingsHost)
+    // ctx.get('connection').fetch.register({ path: '/api/dsh-markji-bridge/settings',
+    //   methods: ['GET','POST'], requestBody: 'buffered', fetch })
+    // GET -> status; POST {action: 'setApiKey'|'testApiKey'|'clearApiKey'|'setDataDir'}.
+    // Errors use SettingsError codes and HTTP 400/409/500 JSON {ok:false,error:{code,message}}.
+
+DEK precedence: an existing <dataDir>/secret.key sidecar wins; otherwise the Host
+credentials record dsh-markji-bridge/dek is used/created; without a credentials service the
+sidecar is created with mode 0600. A corrupt sidecar or malformed record throws
+secret_key_invalid / secret_key_unreadable; decrypt never mints a replacement DEK, so a
+missing key reports secret_key_missing. A key that cannot be decrypted sets runtime.keyError
+and never falls back to legacy config/env.
+
+The client half (client.js) registers the plugins.bundle.config slot with key
+dsh-markji-bridge, so the form renders on this bundle's page under Plugins (between
+the description and the rows). It calls GET/POST on the same-origin settings route and
+never receives the plaintext key, only status.
+
 ## lib/sync.js
 
     export function createEngine({ client, store, config, log, clock = Date.now })
@@ -339,13 +395,10 @@ Local id format: local_ + 12 lowercase hex chars, generated with node:crypto ran
     //   start(): Promise<void>,             // load cache + start auto-sync timer if config.autoSync
     //   stop(): Promise<void>,              // clear timer, flush store
     //   status(): object,
-    //   listDecks({ refresh, folder_id, scope, query, query_mode, predicate, fields,
-    //               regex_flags, min_score } = {}): Promise<object>,
-    //   listChapters({ deck, refresh, scope, query, query_mode, predicate, fields,
-    //                  regex_flags, min_score } = {}): Promise<object>,
-    //   listCards({ scope, deck, chapter, query, query_mode, predicate, fields, regex_flags,
-    //               min_score, deck_name, chapter_name, updated_after, updated_before,
-    //               limit, offset, refresh } = {}): Promise<object>,
+    //   listDecks({ refresh, folder_id, scope, filter } = {}): Promise<object>,
+    //   listChapters({ deck, refresh, scope, filter } = {}): Promise<object>,
+    //   listCards({ scope, deck, chapter, filter, deck_name, chapter_name,
+    //               updated_after, updated_before, limit, offset, refresh } = {}): Promise<object>,
     //   getCard({ card, deck } = {}): Promise<object>,
     //   getCards({ cards } = {}): Promise<{ cards, missing? }>,
     //   createCard({ deck, chapter, content, order, grammar_version }): Promise<object>,
@@ -360,7 +413,7 @@ Local id format: local_ + 12 lowercase hex chars, generated with node:crypto ran
     //   push({ reason } = {}): Promise<PushReport>,
     //   startSync({ mode = 'auto', full = false, resume = null } = {}): Promise<{ task: SyncTask, already_running?: true }>,
     //   syncTaskStatus({ task_id } = {}): { task: SyncTask } | { active: SyncTask|null, tasks: SyncTask[] },
-    //   waitForTask(task_id, timeoutMs): Promise<SyncTask|null>,   // internal/tests
+    //   waitForTask(task_id, timeoutMs): Promise<SyncTask|null>,   // tests + markji_sync action=wait; polls a foreign owned task
     //   hasPending(): boolean,
     //   ensureFresh(maxAgeMs): Promise<void>,
     //   touch(): void,                      // marks tool activity for idle detection
@@ -554,6 +607,7 @@ Rules:
 Tools:
 
     markji_sync action=start    { mode?, full?, resume? } -> { task: SyncTask, job_id?, already_running? }  (no wait)
+    markji_sync action=wait     { task_id, timeout_ms? }  -> { task: SyncTask }; waits up to timeout_ms (default 1800000, max 1800000) and sets task.timed_out=true when still running. A task owned by another DSH process is polled through the shared cache.
     markji_sync action=progress { task_id? }              -> { task: SyncTask } with task_id; otherwise { active: SyncTask|null, tasks: SyncTask[] }  // newest 3
 
 ### DSH background-job bridge
@@ -567,9 +621,11 @@ notification. It is optional at runtime:
   before and returns no job_id; the persisted task remains the source of truth.
 - jobs.start({ kind:'markji-sync', label, owner: <exec.agent.id>, toolCall, run(handle) }).
   run() registers engine.watchTaskProgress (immediate snapshot, then every applied progress
-  event -> handle.updateProgress) and engine.watchTask (terminal view -> append a report summary,
-  then settle the returned done promise with { status, detail, result: <task view> }). A running
-  job returns { cancel(reason) { engine.cancelTask(task_id) }, done }.
+  event -> handle.updateProgress plus one handle.append line when the rendered progress line
+  changes) and engine.watchTask (terminal view -> append a report summary, then settle the
+  returned done promise with { status, detail, result: <task view> }). job_output therefore
+  streams live progress instead of receiving only the terminal summary. A running job returns
+  { cancel(reason) { engine.cancelTask(task_id) }, done }.
 - Mapping: completed -> completed, failed -> failed, interrupted/other -> killed. JobOutcome.result
   is a serialized task-view string (DSH interpolates it into job_output; an object would render
   as [object Object]). dsh-tool-jobs emits the completion notice; do not add a custom
@@ -582,27 +638,28 @@ notification. It is optional at runtime:
 
 ### List filter pipeline
 
-Each list owns its filter: compileDeckFilter, compileChapterFilter and compileCardFilter
-call shared argument helpers (readFilterMode/readFilterQuery/readFilterPredicate/
-validateFilterShape/readFilterMatcher/matchTextFields) but keep independent mode arrays, text
-fields and predicate allow-lists. They trim query, compile predicate with
-compilePredicate(tree, { fields: <list fields> }), reject query_mode=predicate without predicate
-or with query, validate fields, and build one createSearchMatcher (lib/search.js) reused for
-every row. filterRows calls filter.matches(values) for each row, lets applySearchHit add
-score/matched_by/snippet, and sorts fuzzy results by score then natural order. Unsupported
-fields or ops fail with invalid_argument; they are never matched against another resource.
-Card-specific deck_name/chapter_name/updated_after/updated_before filters run before the card
-filter; partial fuzzy fallback runs only when no card matched and fields includes text, and its
-entries are re-checked against the predicate.
+Each list owns its filter: compileDeckFilter, compileChapterFilter and compileCardFilter call the
+shared readFilterTree helper but keep independent field allow-lists. readFilterTree rejects the
+removed text-query arguments (query, query_mode, predicate, fields, regex_flags, min_score),
+treats a missing/null/{} filter as no filter, passes the raw tree to
+compileFilter(tree, { fields: <list fields> }), and wraps compile errors as invalid_argument.
+filterRows walks rows in natural order and calls filter.matches(values) only; there is no
+scoring, snippet rewriting, result sorting, or fallback pass. Card-specific
+deck_name/chapter_name/updated_after/updated_before filters run before the card filter.
+Unsupported fields or ops fail with invalid_argument; they are never matched against another
+resource.
 
-lib/predicate.js compiles a JSON tree, never JavaScript. A condition is
+lib/filter.js compiles a JSON tree, never JavaScript. A condition is
 { field, op, value, case_sensitive?, flags? }; groups are { all }, { any }, { not }; ops are
 eq/ne/contains/starts_with/ends_with/regex/in/not_in/gt/gte/lt/lte/exists. readPath walks own
 properties only (no prototype access). Field roots are checked against the per-list allow-list,
 and forbidden path segments (__proto__, prototype, constructor) are rejected at compile time.
 String comparisons are case-insensitive by default (case_sensitive opts out), numbers compare
-numerically, and gt/gte/lt/lte fall back to string ordering for ISO timestamps. Limits: depth 8,
-64 nodes; invalid trees reject as invalid_argument before any row is evaluated.
+numerically, and gt/gte/lt/lte fall back to string ordering for ISO timestamps. Regex uses
+JavaScript RegExp with imsu flags (default i; an explicit case_sensitive without flags removes
+i) and rejects unsafe nested quantifiers, long sources, duplicate flags, g/y, invalid patterns
+and invalid flag characters. Limits: depth 8, 64 nodes; invalid trees reject as
+invalid_argument before any row is evaluated.
 
 ### Read/lazy behavior
 
@@ -616,50 +673,35 @@ numerically, and gt/gte/lt/lte fall back to string ordering for ISO timestamps. 
   account takes minutes and a typo id must fail fast), retry, then throw MarkjiError
   (unknown_deck|unknown_chapter|unknown_card) with a hint to run markji_sync mode=pull
   full=true when the entity may exist on another device.
-- Every list action (listDecks / listChapters / listCards) accepts the same interface:
-  scope, query, query_mode, predicate, fields, regex_flags, min_score. Mode arrays and field
-  sets are per-list (DECK_FILTER_MODES/CHAPTER_FILTER_MODES/CARD_FILTER_MODES, DECK_*_FIELDS,
-  CHAPTER_*_FIELDS, CARD_*_FIELDS). query and predicate AND together; query_mode=predicate
-  requires predicate and rejects query. scope is inferred from deck / chapter / folder_id when
-  omitted; an explicit conflict (scope=all with a target, or scope=deck without a deck) rejects
-  with invalid_argument. fields must be a non-empty subset of that list's text fields. All
-  filters run in memory over the loaded cache.
+- Every list action (listDecks / listChapters / listCards) accepts the same filter interface:
+  scope and filter. The removed text-query arguments are rejected rather than ignored. scope is
+  inferred from deck / chapter / folder_id when omitted; an explicit conflict (scope=all with a
+  target, or scope=deck without a deck) rejects with invalid_argument. All filters run in memory
+  over the loaded cache.
 - listDecks -> { folders: [{ id, name, deck_count, parent_id? }], decks: [DeckView], total,
   hint? }. Folder items are no longer returned; DeckView.folder_id maps a deck to its folder
   and only DECK-kind folder items are counted. scope=all|folder (folder requires folder_id);
-  query fields default name/description/id; predicate fields are DECK_PREDICATE_FIELDS.
-  DeckView = { id, name, card_count, chapter_count, folder_id?, is_private?, source?,
-  status?, missing?, description?, updated_time? }; description/updated_time only in getDeck,
-  and default-valued flags are omitted.
+  filter fields are DECK_FILTER_FIELDS. DeckView = { id, name, card_count, chapter_count,
+  folder_id?, is_private?, source?, status?, missing?, description?, updated_time? };
+  description/updated_time only in getDeck, and default-valued flags are omitted.
 - listChapters({deck}) -> { deck_id, deck_name, chapters: [ChapterView], total, hint? };
   without deck -> { decks: [{ deck_id, deck_name, chapters: [ChapterView] }], total, hint? }.
-  scope=all|deck (deck requires deck); query fields default name/id; predicate fields are
-  CHAPTER_PREDICATE_FIELDS (chapter-only; no description or deck_name, use scope=deck for the
-  parent). With a filter active, deck groups with no matching chapters are
-  omitted. ChapterView = { id, name, card_count, pending?, local?, missing? };
-  getChapter/chapter_get (detail=true) adds revision, order and updated_time.
-- listCards -> { total, offset, limit, has_more, cards: [CardSummary], partial?,
-  fallback_terms?, hint? }. scope=all|deck|chapter (deck requires deck, chapter requires
-  chapter; a supplied deck+chapter must agree). deck_name/chapter_name are case-insensitive
-  substrings; updated_after/updated_before accept ISO 8601 or epoch milliseconds (numbers or
-  numeric strings) and compare cloud.updated_time with the local updated_time fallback,
-  inclusive; invalid or reversed times reject. limit 1-200 (default 50), offset >= 0.
-  query fields default CARD_TEXT_FIELDS = text/id/deck_name/chapter_name; predicate fields are
-  CARD_PREDICATE_FIELDS (including status, revision, updated_time, content, cloud, etc.).
-  query_mode substring is a case-insensitive substring; fuzzy adds score and matched_by and
-  sorts best-first (min_score threshold, default 0.6); regex is a JavaScript RegExp over the
-  field (regex_flags i/m/s/u, default i) and adds matched_by. Formatting tags, media
-  references, data URIs and base64 are excluded from text. If a fuzzy query has 3+ whitespace
-  terms and no card matches all of them, it falls back to partial matches: result.partial =
-  true, up to three rarest present terms become result.fallback_terms anchors, cards matching
-  an anchor are ranked by anchor count then rarity, each card gets matched_terms, and
-  result.hint explains the fallback. The fallback only runs when fields includes text, and any
-  predicate is applied to fallback entries too. A zero-result query gets a hint suggesting a
-  shorter phrase or regex alternative; a zero-result predicate gets its own hint. snippet is
-  centred on the first text match. refresh=true forces a pull (otherwise the pull TTL applies).
-  CardSummary = { id, deck_name, chapter_name, snippet, status? } plus optional score /
-  matched_by / matched_terms. status is present only when it is dirty, new or conflict;
-  revision, ids and updated_time are available through getCard.
+  scope=all|deck (deck requires deck); filter fields are CHAPTER_FILTER_FIELDS (chapter-only;
+  no description or deck_name, use scope=deck for the parent). With a filter active, deck groups
+  with no matching chapters are omitted. ChapterView = { id, name, card_count, pending?, local?,
+  missing? }; getChapter/chapter_get (detail=true) adds revision, order and updated_time.
+- listCards -> { total, offset, limit, has_more, cards: [CardSummary], hint? }.
+  scope=all|deck|chapter (deck requires deck, chapter requires chapter; a supplied deck+chapter
+  must agree). deck_name/chapter_name are case-insensitive substrings; updated_after/
+  updated_before accept ISO 8601 or epoch milliseconds (numbers or numeric strings) and compare
+  cloud.updated_time with the local updated_time fallback, inclusive; invalid or reversed times
+  reject. limit 1-200 (default 50), offset >= 0. filter fields are CARD_FILTER_FIELDS
+  (including status, revision, updated_time, content, cloud, etc.). text is the plain-text view
+  with formatting, media, data URIs and base64 excluded; content keeps the rich text. A
+  zero-result call with a filter gets a hint. refresh=true forces a pull (otherwise the pull TTL
+  applies). CardSummary = { id, deck_name, chapter_name, snippet, status? }; status is present
+  only when it is dirty, new or conflict; revision, ids and updated_time are available through
+  getCard.
 - getCard -> { card: { id, deck_id, deck_name, chapter_id, chapter_name, content, text,
   grammar_version, status, cloud: {revision, updated_time} | null, pending?,
   conflict: ConflictView|null, last_error?, created_time, updated_time } }. content is the rich
@@ -711,9 +753,10 @@ content, and there is no editor or compiler in this plugin.
   form. Markdown inline links/images are treated as literal content. media
   contains { kind: 'image'|'mask'|'audio', id, line, column } for valid Pic and
   Audio tags.
-- markji_sync calls this same function before every card write, then checks the
-  collected file ids with client.queryFiles. A syntax error, missing file, or
-  failed query keeps the card queued with its error and skips its move.
+- lib/preflight.js wraps this function: create/update and the push path both call it, then
+  (when checkMediaOnWrite is true, default) check collected file ids with client.queryFiles. A
+  syntax error, missing file, or failed query fails the create/update item without queueing it;
+  at push time it keeps the card queued with its error and skips its move.
 
 ## lib/tools.js + index.js
 
@@ -733,26 +776,26 @@ content, and there is no editor or compiler in this plugin.
 - Tool names/args (exact; four action-based tools):
 
 tool | action | args | returns
-markji_decks | list (default) | { refresh?, folder_id?, scope?, query?, query_mode?, predicate?, fields?, regex_flags?, min_score? } | engine.listDecks
+markji_decks | list (default) | { refresh?, folder_id?, scope?, filter? } | engine.listDecks
 markji_decks | get | { deck, refresh? } | engine.getDeck (deck detail + chapters)
-markji_decks | chapter_list | { deck?, refresh?, scope?, query?, query_mode?, predicate?, fields?, regex_flags?, min_score? } | engine.listChapters
+markji_decks | chapter_list | { deck?, refresh?, scope?, filter? } | engine.listChapters
 markji_decks | chapter_get | { chapter, deck?, with_cards?, refresh? } | engine.getChapter (chapter detail + optional card summaries)
 markji_decks | chapter_create | { deck, name, order? } | engine.editChapter({ action:'create' })
 markji_decks | chapter_rename | { chapter, name, deck? } | engine.editChapter({ action:'rename' })
 markji_decks | chapter_sort | { deck, chapter_ids } | engine.editChapter({ action:'sort' })
-markji_cards | list (default) | { scope?, deck?, chapter?, query?, query_mode?, predicate?, fields?, regex_flags?, min_score?, deck_name?, chapter_name?, updated_after?, updated_before?, limit?, offset?, refresh? } | engine.listCards
+markji_cards | list (default) | { scope?, deck?, chapter?, filter?, deck_name?, chapter_name?, updated_after?, updated_before?, limit?, offset?, refresh? } | engine.listCards
 markji_cards | get | { card?, cards?: string[], include_text? } | engine.getCards (per-id ok/error, one refresh on miss)
 markji_cards | create | { deck?, chapter?, new_cards: [{content, deck?, chapter?, order?, grammar_version?}] } | engine.createCard per item (top-level targets are defaults; batch result)
 markji_cards | update | { card, content, grammar_version? } or { updates: [{card, content, grammar_version?}] } | engine.updateCard per item (batch result)
 markji_cards | move | { cards: string[], to_chapter, deck?, order? } | engine.moveCards
 markji_cards | archive | { cards: string[] } | engine.archiveCards (archive chapter + notice + move)
-markji_cards | validate | { content? or contents? or cards?: string[] } | validateCardContent per item (batch result)
-markji_cards | syntax_help | { format? } | getSyntaxHelp
+markji_cards | syntax_help | { format? } | getSyntaxHelp (docs only; create/update preflight automatically)
 markji_sync | start (default) | { mode?: 'auto'|'pull'|'push', full?: bool, resume?: string } | engine.startSync (returns { task, already_running? } immediately)
+markji_sync | wait | { task_id, timeout_ms?: number } | engine.waitForTask ({task}; sets task.timed_out=true when still running)
 markji_sync | progress | { task_id?: string } | engine.syncTaskStatus ({task} with task_id, otherwise {active,tasks}; no network)
 markji_sync | state | {} | engine.status
-markji_sync | failures | { card?, deck?, limit? } | engine.failures (conflicts, failed cards, recovery)
-markji_sync | resolve | { id, strategy: 'keep_local'|'keep_remote'|'use_content', content? } | engine.resolveConflict
+markji_sync | failures | { card?, deck?, limit? } | engine.failures (conflicts, failed cards, recovery, batch_arguments)
+markji_sync | resolve | { id, strategy, content? } or { ids: string[], strategy } or { items: [{id, strategy, content?}] } | engine.resolveConflict / resolveConflicts (single id keeps old shape; batch max 50, per-item result order)
 markji_file | upload/query | { action: 'upload'|'query', path?, ids?, expires?, deck? } | { file } / { files } (direct client call, not cached)
 
 ### Archive semantics
@@ -773,15 +816,13 @@ moved.
 `getCards({ cards })` de-duplicates ids while preserving request order, runs one
 `ensureFresh` and at most one `forcePullForMissing('cards')`, then returns
 `{ cards: [CardView], missing?: [id] }`; the tool strips `card.text` unless
-`include_text` is true. `action=validate` builds an error item per `missing` id so a
-bad id does not abort the batch. `markji_cards({ action:'validate' })` accepts exactly one of `content`,
-`contents`, or `cards`; the cards mode validates the pending content when present
-and reports `content_source`. `markji_cards({ action:'create' })` resolves each `new_cards` item's deck/chapter from the item
+`include_text` is true. `markji_cards({ action:'create' })` resolves each `new_cards` item's deck/chapter from the item
 or the top-level defaults, then calls the single-card engine method once per
-item; `action:'update'` does the same for `updates`, catch each
-failure, preserve result order, and return `total / created|updated / failed /
-partial` plus per-item results. Batch writes are not transactional: successful
-items stay queued when another item fails. Every new batch entry is capped at
+item; `action:'update'` does the same for `updates`, catch each failure, preserve result order, and return
+`total / created|updated / failed / partial` plus per-item results. Before queueing, both
+create and update call the shared preflight (validateCardContent + optional client.queryFiles)
+and return errors/warnings/media on the item; a failed item is not queued. Batch writes are not
+transactional: successful items stay queued when another item fails. Every new batch entry is capped at
 `MAX_BATCH_ITEMS = 50` (archive / move keep their existing behavior); batch get
 defaults `include_text` to false to stay inside the tool-output budget.
 
@@ -793,17 +834,20 @@ strategies, hint }`; `failed_cards` for cards whose `last_error` is set and that
 pending/local work or a missing deck/chapter (successful push and conflict resolution clear it),
 with `error { code, op, message, at }` and a per-item `recovery`; and
 `last_task_errors` from the most recent task reports. There is no global static recovery block:
-each conflict and failed card carries its own recovery. It accepts one card/deck filter and a
-bounded limit, and never touches the network.
+each conflict and failed card carries its own recovery. It also returns `batch_arguments`
+with ready-to-run `{ tool, arguments, strategies }` when open conflicts exist, so a caller can
+resolve all (or the first 50) in one call. It accepts one card/deck filter and a bounded limit,
+and never touches the network.
 
-- markji_cards gets timeoutMs: 120000; markji_decks / markji_sync get 60000;
-  markji_file uploads can be large, so keep 180000 for that one. markji_sync no longer waits
-  for the network, so 60000 is enough to create the task.
-- index.js: read config, create limiter -> client -> store -> engine, 4 tools, await engine.start()
-  inside one ctx.effect registering tools + auto timer; cleanup stops timer, disposes tools,
-  awaits engine.stop() (best effort). apply must return the disposer synchronously;
-  ctx.effect may return a cleanup that awaits. Start engine with void engine.start().catch(...)
-  and let tools await engine.ready() internally so the first tool call waits for the cache.
+- markji_cards gets timeoutMs: 120000; markji_decks gets 60000; markji_sync gets 1800000 so
+  action=wait can block for its documented timeout (start still returns immediately);
+  markji_file uploads can be large, so keep 180000 for that one.
+- index.js: read config, apply saved settings.json (dataDir), create limiter -> client -> store ->
+  secretBox -> engine, initialize the encrypted API Key (migrating legacy config/env once),
+  4 tools, settings host + route, then start the engine. All of this lives in one ctx.effect;
+  cleanup disposes the route/tools/timer, stops the engine, and closes the store. apply must return
+  the disposer synchronously; ctx.effect may return a cleanup that awaits. Start the engine after
+  credentialsReady and let tools await engine.ready() internally so the first tool call waits.
 - Logging: [dsh-markji-bridge] <level> <message> via console; never log the token.
 
 ## Testing requirements (all owners)
@@ -829,37 +873,35 @@ bounded limit, and never touches the network.
 - Multi-process tests (test/multiprocess.test.js): two stores see each other's writes (including
   same-millisecond commits via SQLite data_version), the writer lock serializes two stores and a
   real child process, a stale dead-pid lock is reclaimed, a task waits with stage=waiting_lock,
-  an engine read sees another engine's push, and a second engine start keeps a live task owned by
-  another process.
+  an engine read sees another engine's push, a second engine start keeps a live task owned by
+  another process, and that second engine can wait for the shared task to finish.
 - Background-task tests (test/sync-task.test.js): startSync returns a handle while a slow pull
   is still running; progress events advance and persist; only one task runs; a persisted
   'running' task with a provably dead owner is marked 'interrupted' by a new engine on the same
   dataDir and is resumable through the same handle; a resumed pull adopts already-created local
   cards/chapters instead of duplicating them; completion stores report and syncTaskStatus returns
-  {task} for one task_id or {active,tasks} otherwise; watchTaskProgress emits live views and watchTask emits exactly one terminal view;
-  cancelTask interrupts a running task at a checkpoint and leaves it resumable.
+  {task} for one task_id or {active,tasks} otherwise; waitForTask returns the terminal view, sets
+  timed_out when the wait expires while the task is still running, and can wait on a task owned
+  by another engine process; watchTaskProgress emits live views and watchTask emits exactly one
+  terminal view; cancelTask interrupts a running task at a checkpoint and leaves it resumable.
 - DSH job bridge tests (test/jobs.test.js): labels/progress/summary/outcome mapping; startSyncJob
-  registers with the jobs service, seeds progress, mirrors later progress, appends the terminal
-  summary and resolves the job with the task; markji_sync action=start returns job_id when
-  ctx.get('jobs') and exec.agent are present, reuses one job for the same session/task, does
-  not require jobs when the service is unavailable, and does not create a job for a running task
-  owned by another DSH process (that job could never settle locally).
+  registers with the jobs service, seeds progress, mirrors later progress into both updateProgress
+  and appended job output, appends the terminal summary and resolves the job with the task;
+  markji_sync action=wait forwards task_id/timeout_ms and reports unknown_task; markji_sync
+  action=start returns job_id when ctx.get('jobs') and exec.agent are present, reuses one job for
+  the same session/task, does not require jobs when the service is unavailable, and does not
+  create a job for a running task owned by another DSH process (that job could never settle locally).
 - Cold load reads all v4 tables inside one SQLite transaction; refreshIfChanged combines file
   size/mtime with PRAGMA data_version so same-millisecond foreign commits are not missed.
-- Filter tests (test/search.test.js, test/predicate.test.js, test/list-filter.test.js,
-  test/tool-search.test.js): substring stays the default; fuzzy tolerates a one-character typo,
-  adds score/matched_by, honors min_score, sorts best-first, ANDs all space-separated terms,
-  does not pass a multi-term query on partial character overlap, falls back to
-  rare-term-anchored partial matches with fallback_terms and matched_terms for 3+ terms when no
-  card matches all, and returns a hint when a long query matches nothing; regex honors default
-  i and explicit m, matches by id, rejects invalid patterns and flags; predicate covers all 13
-  ops, all/any/not groups, dot paths, nested own-property reads, case sensitivity, depth/node
-  limits, forbidden keys and invalid trees; listCards supports scope=all/deck/chapter with
-  inferred and explicit conflicts, fields, predicate-only queries, predicate+query AND, and
-  the partial fallback; listDecks/listChapters support query, fuzzy, predicate, scope and
-  hints; the markji_cards tool merges query/query_mode/predicate/fields/scope into list,
-  forwards regex_flags and min_score, and rejects invalid values, action=search and invalid
-  query modes.
+- Filter tests (test/filter.test.js, test/card-filter.test.js, test/list-filter.test.js,
+  test/tool-filter.test.js): compileFilter covers all 13 ops, all/any/not groups, dot paths,
+  nested own-property reads, case sensitivity, regex default i / explicit flags / unsafe regex
+  rejection, depth/node limits, forbidden keys and invalid trees; listCards filters plain text
+  and content, supports scope=all/deck/chapter with inferred and explicit conflicts, regex,
+  case sensitivity and groups; listDecks/listChapters use their own field allow-lists and reject
+  another resource's fields; legacy query/query_mode/predicate/fields arguments are rejected;
+  the markji_cards tool schema exposes only filter (not the removed arguments), forwards the
+  tree unchanged, and rejects invalid filter values.
 - Plain-text tests (test/plain-text.test.js): formatting tags keep visible text; media, data URIs
   and long bare base64 runs are dropped; markup must not be mistaken for Markdown links
   (str.[T#B#find](sub) -> str.find(sub)); listCards filters/snippets never match base64 or
@@ -873,8 +915,12 @@ bounded limit, and never touches the network.
   media/card-ref validation, validator errors and warnings, Markdown links/images treated as
   literal content, exact media extraction, placeholders, and no trimming of raw content.
 - Media-preflight tests (test/media-preflight.test.js): valid media is pushed, missing media and
-  invalid syntax are reported without cloud writes, a failed query keeps cards queued, and the
-  registered 4 tools include markji_cards action=validate.
+  invalid syntax are reported without cloud writes, a failed query keeps cards queued; create/update
+  reject bad items before queueing while other batch items continue.
+- Secret/settings tests (test/secret.test.js, test/settings.test.js, test/no-secret.test.js): AES-GCM
+  round-trip/tamper/rotate, credentials vs sidecar DEK, encrypted key has no plaintext in cache.db,
+  malformed key rejection, test-without-persist, clear, dataDir copy + restart marker, route GET/POST,
+  and a repo scan that fails on a 64-hex token.
 - Every test cleans up its temp dir. Tests must be deterministic (inject clock everywhere
   timestamps matter).
 
@@ -885,17 +931,19 @@ bounded limit, and never touches the network.
    warnings that affect loading; the 4 markji_* tools are visible to the agent.
 3. Live read-only check with the real token: markji_decks action=list lists the real decks;
    markji_decks action=get / chapter_get and markji_cards action=list/get work on a real
-   deck, including list filters with query_mode=fuzzy/regex and predicate; cache.db appears under the
+   deck, including list filters with a JSON filter tree (contains, regex, groups, invalid-field rejection); cache.db appears under the
    data dir.
 4. Mock HTTP end-to-end (test/e2e-mock.mjs) proves create/update/move/chapter writes,
    pull-before-push, remote-change merge, conflict recording without aborting other cards,
    and local id remapping over real HTTP.
 5. markji_sync action=start returns a task handle immediately (no network wait);
-   markji_sync action=progress reports progress; a sync task persisted as 'running' by a killed process is listed as
-   'interrupted' after reload and resumes through the same handle without duplicating cards.
-   With dsh-tool-jobs loaded and a live owning session, start also returns job_id, the job is
-   listed with live progress, job_output returns the task, DSH's completion notice is emitted
-   when it settles, and killing the job interrupts the sync so it can be resumed.
-6. README documents the four tools and their actions (including batch reads / creates / updates and syntax validation, chapter detail, media preflight, async task workflow and resume), config,
+   markji_sync action=wait blocks until that task settles or returns task.timed_out=true at the
+   timeout; markji_sync action=progress reports progress; a sync task persisted as 'running' by
+   a killed process is listed as 'interrupted' after reload and resumes through the same handle
+   without duplicating cards. With dsh-tool-jobs loaded and a live owning session, start also
+   returns job_id, the job is listed with live progress, job_output streams live progress lines
+   and returns the task, DSH's completion notice is emitted when it settles, and killing the job
+   interrupts the sync so it can be resumed.
+6. README documents the four tools and their actions (including batch reads / creates / updates, automatic syntax/media preflight, chapter detail, plugin detail page configuration + encrypted API Key, async task workflow with wait/progress, live job output, bulk resolve and resume), config,
    cache/sync/conflict/archive/failure/multi-process semantics, data location, install/update/uninstall, and the verification
    actually performed (with dates and exact observed results, no invented claims).

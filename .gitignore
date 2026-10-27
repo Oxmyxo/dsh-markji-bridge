@@ -3,6 +3,8 @@ npm-debug.log*
 *.log
 *.tgz
 cache.db
+secret.key
+settings.json
 cache.db-*
 cache.corrupt-*
 cache.imported-*.json

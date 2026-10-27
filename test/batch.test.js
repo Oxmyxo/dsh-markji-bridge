@@ -1,5 +1,5 @@
 /**
- * Batch tool tests: multiple card reads, syntax validation, and updates.
+ * Batch tool tests: multiple card reads, write-time preflight, and updates.
  *
  * Run: node --test "test/batch.test.js"
  */
@@ -33,7 +33,11 @@ function makeConfig(mock) {
   };
 }
 
-async function withFixture(run) {
+async function withFixture(options, run) {
+  if (typeof options === 'function') {
+    run = options;
+    options = {};
+  }
   const dir = await mkdtemp(join(tmpdir(), 'markji-batch-'));
   const mock = await startMockMarkji({ token: 'batch-token' });
   let engine = null;
@@ -46,7 +50,7 @@ async function withFixture(run) {
     const bad = mock.newCard(deck.id, chapter.id, '[X##bad]');
     const config = makeConfig(mock);
     const limiter = createLimiter({ limits: [{ windowMs: 1000, max: 1000 }], now: Date.now });
-    const client = createClient({
+    const baseClient = createClient({
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
       timeoutMs: config.requestTimeoutMs,
@@ -54,11 +58,14 @@ async function withFixture(run) {
       limiter,
       log: () => {},
     });
+    const client = typeof options.wrap === 'function' ? options.wrap(baseClient) : baseClient;
     store = createStore({ dataDir: dir, log: () => {}, clock: Date.now });
     engine = createEngine({ client, store, config, log: () => {}, clock: Date.now });
     await engine.ready();
     await engine.sync({ mode: 'pull', full: true });
     const registered = new Map();
+    const deps = { engine, config, log: () => {}, client };
+    if (options.checkMediaOnWrite !== undefined) deps.checkMediaOnWrite = options.checkMediaOnWrite;
     const dispose = registerTools(
       {
         tools: {
@@ -68,7 +75,7 @@ async function withFixture(run) {
           },
         },
       },
-      { engine, config, log: () => {}, client },
+      deps,
     );
     try {
       await run({
@@ -81,6 +88,7 @@ async function withFixture(run) {
         good,
         alsoGood,
         bad,
+        client,
       });
     } finally {
       dispose();
@@ -108,36 +116,102 @@ test('markji_cards action=get returns several cards in request order and isolate
   });
 });
 
-test('markji_cards action=validate validates multiple raw bodies and multiple cached cards', async () => {
-  await withFixture(async ({ call, good, alsoGood, bad }) => {
-    const raw = await call('markji_cards', { action: 'validate', contents: ['第一段 \\[字面括号\\]', '[X##bad]'] });
-    assert.equal(raw.mode, 'batch');
-    assert.equal(raw.source, 'contents');
-    assert.equal(raw.total, 2);
-    assert.equal(raw.valid, 1);
-    assert.equal(raw.invalid, 1);
-    assert.equal(raw.results[0].ok, true);
-    assert.equal(raw.results[1].ok, false);
-    assert.equal(raw.results[1].errors[0].code, 'unknown_tag');
+test('tool surface has no separate validate action or markji_card_syntax entry', async () => {
+  await withFixture(async ({ call, registered }) => {
+    assert.deepEqual([...registered.keys()].sort(), ['markji_cards', 'markji_decks', 'markji_file', 'markji_sync']);
+    assert.equal(registered.has('markji_card_syntax'), false);
+    await assert.rejects(call('markji_cards', { action: 'validate', content: '正文' }), /must be one of/);
+  });
+});
 
-    const cards = await call('markji_cards', { action: 'validate', cards: [good.id, alsoGood.id, bad.id, 'missing_card_id'] });
-    assert.equal(cards.mode, 'batch');
-    assert.equal(cards.source, 'cards');
-    assert.equal(cards.total, 4);
-    assert.equal(cards.valid, 2);
-    assert.equal(cards.invalid, 2);
-    assert.equal(cards.missing, 1);
-    assert.equal(cards.syntax_invalid, 1);
-    assert.equal(cards.results[0].card_id, good.id);
-    assert.equal(cards.results[0].content_source, 'content');
-    assert.equal(cards.results[2].errors[0].code, 'unknown_tag');
-    assert.equal(cards.results[3].error.code, 'unknown_card');
+test('create preflights syntax and media before queueing and queues nothing on failure', async () => {
+  await withFixture(async ({ call, engine, mock, deck, chapter }) => {
+    const before = engine._internal.orderedCards().length;
+    const syntax = await call('markji_cards', {
+      action: 'create',
+      deck: deck.id,
+      chapter: chapter.id,
+      new_cards: [{ content: '[X##bad]' }],
+    });
+    assert.equal(syntax.ok, false);
+    assert.equal(syntax.results[0].ok, false);
+    assert.equal(syntax.results[0].error.code, 'invalid_card_content');
+    assert.equal(syntax.results[0].errors[0].code, 'unknown_tag');
+    assert.match(syntax.results[0].error.message, /line 1:1/);
+    assert.equal(engine._internal.orderedCards().length, before, 'invalid syntax is not queued');
 
-    await call('markji_cards', { action: 'update', card: good.id, content: '排队中的新正文' });
-    const pending = await call('markji_cards', { action: 'validate', cards: [good.id] });
-    assert.equal(pending.results[0].content_source, 'pending');
-    assert.equal(pending.results[0].content_length, '排队中的新正文'.length);
-    assert.equal(pending.valid, 1);
+    const media = await call('markji_cards', {
+      action: 'create',
+      deck: deck.id,
+      chapter: chapter.id,
+      new_cards: [{ content: '[Pic#ID/mkjf_missing#]' }],
+    });
+    assert.equal(media.ok, false);
+    assert.equal(media.results[0].error.code, 'media_unavailable');
+    assert.deepEqual(media.results[0].media, [{ kind: 'image', id: 'mkjf_missing' }]);
+    assert.equal(engine._internal.orderedCards().length, before, 'missing media is not queued');
+
+    mock.state.files.push({
+      file: {
+        id: 'mkjf_present',
+        url: mock.url + '/files/mkjf_present',
+        mime: 'image/png',
+        size: 4,
+        info: { filename: 'present.png' },
+        expire_time: new Date(Date.now() + 86400000).toISOString(),
+      },
+      data: Buffer.from([1, 2, 3, 4]),
+    });
+    const present = await call('markji_cards', {
+      action: 'create',
+      deck: deck.id,
+      chapter: chapter.id,
+      new_cards: [{ content: '[Pic#ID/mkjf_present#]' }],
+    });
+    assert.equal(present.ok, true);
+    assert.equal(present.results[0].changed, true);
+
+    const warned = await call('markji_cards', {
+      action: 'create',
+      deck: deck.id,
+      chapter: chapter.id,
+      new_cards: [{ content: '正文 <imageFileId>' }],
+    });
+    assert.equal(warned.ok, true);
+    assert.equal(warned.results[0].warnings[0].code, 'placeholder');
+    assert.equal(engine._internal.orderedCards().length, before + 2);
+  });
+});
+
+test('create batch queues good items and reports syntax/media failures per item', async () => {
+  await withFixture(async ({ call, engine, deck, chapter }) => {
+    const before = engine._internal.orderedCards().length;
+    const result = await call('markji_cards', {
+      action: 'create',
+      deck: deck.id,
+      chapter: chapter.id,
+      new_cards: [
+        { content: '批量预检一' },
+        { content: '[X##bad]' },
+        { content: '[Pic#ID/mkjf_missing#]' },
+        { content: '模板 <imageFileId>' },
+      ],
+    });
+    assert.equal(result.total, 4);
+    assert.equal(result.created, 2);
+    assert.equal(result.failed, 2);
+    assert.equal(result.partial, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.results[0].ok, true);
+    assert.equal(result.results[1].ok, false);
+    assert.equal(result.results[1].error.code, 'invalid_card_content');
+    assert.equal(result.results[1].errors[0].code, 'unknown_tag');
+    assert.equal(result.results[2].ok, false);
+    assert.equal(result.results[2].error.code, 'media_unavailable');
+    assert.deepEqual(result.results[2].media, [{ kind: 'image', id: 'mkjf_missing' }]);
+    assert.equal(result.results[3].ok, true);
+    assert.equal(result.results[3].warnings[0].code, 'placeholder');
+    assert.equal(engine._internal.orderedCards().length, before + 2, 'only the two valid items are queued');
   });
 });
 
@@ -165,6 +239,86 @@ test('markji_cards action=update batch queues good items and reports bad items w
     assert.equal(card.content, '批量修改后的第一张');
     assert.ok(card.pending);
     assert.equal(bad.id, engine._internal.orderedCards().find((entry) => entry.id === bad.id).id);
+  });
+});
+
+test('update preflights syntax and media and leaves the card untouched on failure', async () => {
+  await withFixture(async ({ call, engine, good }) => {
+    const invalid = await call('markji_cards', { action: 'update', card: good.id, content: '[X##bad]' });
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.error.code, 'invalid_card_content');
+    assert.equal(invalid.errors[0].code, 'unknown_tag');
+
+    const media = await call('markji_cards', { action: 'update', card: good.id, content: '[Audio#A,ID/mkjf_missing#播放]' });
+    assert.equal(media.ok, false);
+    assert.equal(media.error.code, 'media_unavailable');
+    assert.deepEqual(media.media, [{ kind: 'audio', id: 'mkjf_missing' }]);
+
+    const untouched = engine._internal.orderedCards().find((entry) => entry.id === good.id);
+    assert.equal(untouched.content, '第一张正常卡片');
+    assert.equal(untouched.pending, null, 'a failed preflight leaves no queued edit');
+
+    const valid = await call('markji_cards', { action: 'update', card: good.id, content: '更新后的正文 [E##x+y]' });
+    assert.equal(valid.ok, true);
+    assert.equal(valid.changed, true);
+    const edited = engine._internal.orderedCards().find((entry) => entry.id === good.id);
+    assert.equal(edited.content, '更新后的正文 [E##x+y]');
+    assert.equal(edited.pending.content, '更新后的正文 [E##x+y]');
+  });
+});
+
+test('update batch queues good items and reports invalid items without aborting', async () => {
+  await withFixture(async ({ call, engine, good, alsoGood }) => {
+    const result = await call('markji_cards', {
+      action: 'update',
+      updates: [
+        { card: good.id, content: '批量预检一' },
+        { card: alsoGood.id, content: '[X##bad]' },
+        { card: good.id, content: '重复 id' },
+      ],
+    });
+    assert.equal(result.total, 3);
+    assert.equal(result.updated, 1);
+    assert.equal(result.failed, 2);
+    assert.equal(result.partial, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.results[1].ok, false);
+    assert.equal(result.results[1].error.code, 'invalid_card_content');
+    assert.equal(result.results[2].ok, false, 'the duplicate id is still reported per item');
+    assert.equal(engine._internal.orderedCards().find((entry) => entry.id === alsoGood.id).content, '第二张 [E##x+y] 卡片');
+  });
+});
+
+test('checkMediaOnWrite=false skips the write queryFiles but push still rejects missing media', async () => {
+  const counters = { queryFiles: 0 };
+  const wrap = (base) =>
+    new Proxy(base, {
+      get(target, prop, receiver) {
+        if (prop === 'queryFiles') {
+          return async (args) => {
+            counters.queryFiles += 1;
+            return base.queryFiles(args);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  await withFixture({ checkMediaOnWrite: false, wrap }, async ({ call, engine, deck, chapter }) => {
+    const created = await call('markji_cards', {
+      action: 'create',
+      deck: deck.id,
+      chapter: chapter.id,
+      new_cards: [{ content: '[Pic#ID/mkjf_missing#]' }],
+    });
+    assert.equal(created.ok, true, 'the write preflight skipped media, so the card is queued');
+    assert.equal(counters.queryFiles, 0, 'checkMediaOnWrite=false sends no queryFiles from the tool');
+
+    const report = await engine.push();
+    const failure = report.errors.find((entry) => entry.id === created.results[0].card_id);
+    assert.ok(failure, 'push reports the missing media: ' + JSON.stringify(report.errors));
+    assert.equal(failure.code, 'media_unavailable');
+    assert.equal(counters.queryFiles, 1, 'the push preflight still checks media as the final gate');
   });
 });
 

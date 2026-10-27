@@ -1,17 +1,17 @@
 # dsh-markji-bridge: persistent Markji (maimemo) card bridge for the agent.
 #
 # Every value below is a working default; change one only when it does not fit
-# this machine. The Markji OpenAPI Bearer token is read from the
-# MAIMEMO_MARKJI_OPENAPI_TOKEN environment variable; apiKey below is only an
-# optional override and should normally stay empty. baseUrl must not end with '/'.
+# this machine. The Markji OpenAPI Bearer token is configured from the plugin
+# settings page and stored encrypted in cache.db. apiKey below is a legacy
+# migration override and should stay empty. baseUrl must not end with '/'.
 - insert:
     - id: dsh-markji-bridge
       name: dsh-markji-bridge
       config:
         # Register tools and start the auto-sync timer. false registers nothing.
         enabled: true
-        # Optional token override. Leave empty: the token is read from the
-        # MAIMEMO_MARKJI_OPENAPI_TOKEN environment variable. Never logged.
+        # Optional legacy override; empty means the key is stored encrypted by
+        # the plugin settings page (cache.db). Do not put a real token here.
         apiKey: ''
         # Markji OpenAPI base URL. The test server is rejected by this token.
         baseUrl: 'https://open.maimemo.com/open'
@@ -39,3 +39,6 @@
         retryBackoffMs: 300000
         # Cap for the JSON text rendered from one tool result.
         maxOutputChars: 20000
+        # Validate Markji syntax and media ids on create/update before queueing.
+        # false skips the extra queryFiles request; the push path still checks media.
+        checkMediaOnWrite: true

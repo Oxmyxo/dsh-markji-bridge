@@ -71,8 +71,14 @@ test('startSyncJob mirrors progress and settles with the task', async () => {
   const output = [];
   const hooks = spec.run({ updateProgress: (line) => updates.push(line), append: (text) => output.push(text) });
   assert.equal(updates.length, 1, 'seeds progress immediately');
+  assert.equal(output.length, 1, 'seeds job_output with the current progress');
+  assert.match(output[0], /deck 1\/3/);
+  progress.get('sync_abc')(task());
+  assert.equal(output.length, 1, 'an identical immediate snapshot is not appended twice');
   progress.get('sync_abc')(task({ progress: { message: 'pull: deck 2/3', decks_total: 3, decks_done: 2, cards: 20 } }));
   assert.match(updates.at(-1), /deck 2\/3/);
+  assert.equal(output.length, 2, 'each changed progress snapshot is appended for job_output');
+  assert.match(output.at(-1), /deck 2\/3/);
 
   terminal.get('sync_abc')(task({ status: 'completed', report: { pull: { decks: 3, cards: 20 }, push: { cards_created: 1, cards_updated: 2 }, conflicts: [], errors: [] } }));
   const outcome = await hooks.done;
@@ -172,6 +178,66 @@ test('markji_sync action=start exposes one DSH job per session and task', async 
     const second = await tool.execute({ action: 'start', mode: 'pull' }, exec);
     assert.equal(second.job_id, 'markji-sync-job-1');
     assert.equal(starts.length, 1, 'same session and task reuse the job');
+  } finally {
+    dispose();
+  }
+});
+
+test('markji_sync action=wait waits for one task id with an optional timeout', async () => {
+  const registered = new Map();
+  const calls = [];
+  const ctx = {
+    tools: {
+      register(spec) {
+        registered.set(spec.name, spec);
+        return () => {};
+      },
+    },
+  };
+  const engine = {
+    async ready() {},
+    async waitForTask(taskId, timeoutMs) {
+      calls.push({ taskId, timeoutMs });
+      return task({ status: 'completed', finished_at: 1, report: { pull: { decks: 1, cards: 1 }, push: null, conflicts: [], errors: [] } });
+    },
+  };
+  const dispose = registerTools(ctx, { engine, config: { maxOutputChars: 20000 }, log: () => {} });
+  try {
+    const tool = registered.get('markji_sync');
+    assert.ok(tool.parameters.properties.action.enum.includes('wait'));
+    const defaults = await tool.execute({ action: 'wait', task_id: 'sync_abc' }, {});
+    assert.deepEqual(calls[0], { taskId: 'sync_abc', timeoutMs: 1800000 });
+    assert.equal(defaults.task.status, 'completed');
+    const explicit = await tool.execute({ action: 'wait', task_id: 'sync_abc', timeout_ms: 5000 }, {});
+    assert.deepEqual(calls[1], { taskId: 'sync_abc', timeoutMs: 5000 });
+    assert.equal(explicit.task.task_id, 'sync_abc');
+  } finally {
+    dispose();
+  }
+});
+
+test('markji_sync action=wait reports an unknown task', async () => {
+  const registered = new Map();
+  const ctx = {
+    tools: {
+      register(spec) {
+        registered.set(spec.name, spec);
+        return () => {};
+      },
+    },
+  };
+  const engine = {
+    async ready() {},
+    async waitForTask() {
+      return null;
+    },
+  };
+  const dispose = registerTools(ctx, { engine, config: { maxOutputChars: 20000 }, log: () => {} });
+  try {
+    await assert.rejects(
+      registered.get('markji_sync').execute({ action: 'wait', task_id: 'sync_missing' }, {}),
+      /unknown_task/,
+    );
   } finally {
     dispose();
   }

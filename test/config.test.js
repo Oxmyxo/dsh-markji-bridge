@@ -45,6 +45,14 @@ test('the legacy env var still works as a fallback', () => {
   });
 });
 
+test('checkMediaOnWrite defaults to true and accepts false', () => {
+  withEnv({}, () => {
+    assert.equal(readConfig({}).checkMediaOnWrite, true);
+    assert.equal(readConfig({ checkMediaOnWrite: false }).checkMediaOnWrite, false);
+    assert.equal(readConfig({ checkMediaOnWrite: 'off' }).checkMediaOnWrite, false);
+  });
+});
+
 test('the default data dir is <home>/.dsh/dsh-markji-bridge and is portable', () => {
   const expected = join(homedir(), '.dsh', 'dsh-markji-bridge');
   assert.equal(defaultDataDir(), expected);
@@ -115,7 +123,7 @@ test('migrateLegacyCache is a no-op without a legacy cache or valid paths', asyn
 test('the package manifest is ready for a public release', async () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.name, 'dsh-markji-bridge');
-  assert.equal(pkg.version, '2.4.0');
+  assert.equal(pkg.version, '2.7.0');
   assert.equal(pkg.private, undefined);
   assert.equal(pkg.license, 'MIT');
   assert.match(pkg.engines.node, />=22\.13\.0/);

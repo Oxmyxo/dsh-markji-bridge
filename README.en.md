@@ -6,21 +6,20 @@
 
 A Markji (maimemo) flashcard plugin for DeepSeek Harness (DSH) agents. It maintains a local cache of decks, chapters, and cards, so an agent can search, read, create, update, and archive cards. Every edit is written to a local queue first, then synced to the cloud in a pull → three-way merge → push order. Conflicts are reported separately and never block the rest of the cards.
 
-Four action-based `markji_*` tools, implemented with Node.js built-in modules only, with no third-party dependencies: `markji_decks` (decks and chapters, including chapter detail, create, rename, and sort), `markji_cards` (list filters, reads, writes, syntax, archive, and move), `markji_sync` (sync, progress, state, failures, and conflicts), and `markji_file` (files). Use `markji_cards({ action: "syntax_help" })` to look up raw Markji syntax, then `action=validate` before writing; batch work uses the same tool's `new_cards`, `updates`, and `contents` / `cards`. Sync additionally checks that image / audio file ids referenced by the content exist in Markji.
+Four action-based `markji_*` tools, implemented with Node.js built-in modules only, with no third-party dependencies: `markji_decks` (decks and chapters, including chapter detail, create, rename, and sort), `markji_cards` (list filters, reads, writes, syntax, archive, and move), `markji_sync` (sync, waiting, progress, state, failures, and conflicts), and `markji_file` (files). Use `markji_cards({ action: "syntax_help" })` to look up raw Markji syntax; `create` / `update` validate syntax and media references before queueing, so no separate validation call is needed.
 
 ## Features
 
 - **Local cache**: one SQLite file, `cache.db`, stores indexes, card bodies, the pending queue, conflicts, and sync tasks. Routine searches and reads do not call the API.
-- **Unified list filtering (search is a filter)**: card `list`, deck `list`, and `chapter_list` share the same filter parameter set, each with its own fields; there is no separate `search` action:
-  - `query` + `query_mode`: `substring` (default), `fuzzy` (approximate matches that tolerate small typos and sort by score), `regex` (JavaScript regular expression; `regex_flags` accepts `imsu`, default `i`), or `predicate` (structured condition tree).
+- **Unified list filtering (JSON condition tree)**: card `list`, deck `list`, and `chapter_list` all take one `filter` parameter, each with its own field set; there is no separate `search` action; every filter is expressed through `filter`:
+  - `filter`: a JSON condition tree, never JavaScript. A condition is `{ field, op, value, case_sensitive?, flags? }`; groups are `{ all: [...] }` / `{ any: [...] }` / `{ not: {...} }`; ops are `eq`, `ne`, `contains`, `starts_with`, `ends_with`, `regex`, `in`, `not_in`, `gt`, `gte`, `lt`, `lte`, and `exists`. Regex `flags` accepts `imsu` (default `i`), and `case_sensitive: true` disables the default case-insensitive string/regex matching. Omit `filter` or pass `{}` to list everything.
   - `scope`: cards accept `all` / `deck` / `chapter`, chapters accept `all` / `deck`, and decks accept `all` / `folder`. When omitted it is inferred from `deck` / `chapter` / `folder_id`; an explicit conflict is an error.
-  - `fields`: the fields `query` matches. Cards default to `text` / `id` / `deck_name` / `chapter_name`, decks to `name` / `description` / `id`, and chapters to `name` / `id`.
   - Each list owns its field set: decks only accept deck fields (`name` / `description` / `id`, times, counts, and so on), chapters only accept chapter fields (there is no `description` and no `deck_name`; use `scope=deck` to narrow by parent deck), and cards keep the wider set (`text` / `content` / `cloud` / `status`, and so on). Fields or ops that do not belong to that list fail with `invalid_argument`; they are never matched across resources.
-  - `predicate`: a JSON condition tree, never JavaScript. A condition is `{ field, op, value, case_sensitive?, flags? }`; groups are `{ all: [...] }` / `{ any: [...] }` / `{ not: {...} }`; ops are `eq`, `ne`, `contains`, `starts_with`, `ends_with`, `regex`, `in`, `not_in`, `gt`, `gte`, `lt`, `lte`, and `exists`. `predicate` ANDs with `query`; `query_mode=predicate` requires `predicate` and rejects `query`. Conditions read own properties only, with a maximum depth of 8 and at most 64 nodes.
-- **Plain-text matching**: each card also stores a plain-text column with formatting markers, image/audio markers, data URIs, and base64 removed, so the `text` field stays clean and readable. `min_score` tunes the fuzzy threshold. Keep `query` to one short phrase (usually 1-3 words): fuzzy compares the whole query, and space-separated terms must all match approximately. If 3+ terms match no card fully, fuzzy picks the rarest query terms as anchors and falls back to partial matches with `partial: true`, `fallback_terms`, and per-card `matched_terms`, plus a `hint`. Do not paste a list of concepts as a query.
+- **Plain-text matching**: each card also stores a plain-text column with formatting markers, image/audio markers, data URIs, and base64 removed, so the `text` field stays clean and readable; `content` keeps the original rich text for regex matches against the whole body.
 - **Safe writes**: edits are queued; before pushing, remote changes are pulled and three-way merged, so stale data never overwrites the cloud. Conflicts are deduplicated per card and can be resolved individually.
-- **Syntax help, batch operations, write preflight, and media check**: `markji_cards action=syntax_help` returns the raw Markji syntax for one format or all formats; `action=validate` accepts one `content`, several `contents`, or several `cards` and only validates content, never generating or rewriting it. `action=get` reads several cards at once, `action=create` accepts `new_cards` that may target different chapters or decks in one call, and `action=update` accepts an `updates` array that queues several writes. Before pushing, `markji_sync` validates each pending body again and batch-queries the `Pic` / `Audio` file ids. Syntax errors, missing files, and query failures are recorded on the card while the queue is kept, so nothing is half-written.
-- **Background sync**: a sync task returns a handle immediately and exposes progress. After a crash or plugin restart, resume with the same handle without creating duplicate cloud objects. When DSH loads `dsh-tool-jobs`, `markji_sync({ action: "start" })` also registers the task as a DSH background job owned by the calling session and returns `job_id`; it appears in the running-background-jobs list, `job_output` reads it, and DSH sends the standard completion notice. Killing that job cancels the sync at its next checkpoint, marks the stored task `interrupted`, and leaves it resumable.
+- **Plugin page and encrypted credentials**: the plugin's detail page accepts a Markji API Key and lets you choose the `cache.db` directory. The key is stored only as AES-256-GCM ciphertext in the `secrets` table inside `cache.db`; the data key lives in the DSH credentials service or in a user-only-readable `secret.key`, so no plaintext token appears in config files or source.
+- **Automatic write preflight and media check**: `markji_cards action=syntax_help` returns the raw Markji syntax for one format or all formats. `create` / `update` validate every body before queueing and, by default, batch-query the `Pic` / `Audio` file ids (`checkMediaOnWrite: false` skips the media query). Syntax errors, missing files, and failed queries fail that item without creating a pending card, while the rest of the batch continues. `markji_sync` keeps the same preflight before pushing as the final gate.
+- **Background sync**: a sync task returns a handle immediately and exposes progress. After a crash or plugin restart, resume with the same handle without creating duplicate cloud objects. When DSH loads `dsh-tool-jobs`, `markji_sync({ action: "start" })` also registers the task as a DSH background job owned by the calling session and returns `job_id`; it appears in the running-background-jobs list, `job_output` appends live progress as the sync advances, and DSH sends the standard completion notice. You can also block on the task with `markji_sync({ action: "wait", task_id })` (optional `timeout_ms`; a timeout returns `task.timed_out: true`). Killing that job cancels the sync at its next checkpoint, marks the stored task `interrupted`, and leaves it resumable.
 - **Archive and chapter operations**: `markji_cards({ action: "archive" })` moves cards into the same deck's "Archive" chapter and inserts an archive note into the body; repeated calls are idempotent. `markji_decks` supports chapter detail, create, rename, and sort (the provider has no chapter-delete endpoint).
 - **Multi-process safety**: multiple DSH processes on one machine can share a cache directory; writes are serialized with a file lock.
 
@@ -60,21 +59,13 @@ plugin_manager set_plugin  target=include:dsh-markji-bridge  enabled=false
 plugin_manager set_plugin  target=include:dsh-markji-bridge  enabled=true
 ```
 
-## Token configuration
+## API Key and cache location
 
-Set the Markji OpenAPI token in the **DSH host process** environment (get one from the [Maimemo Open Platform](https://open.maimemo.com/)):
+Open **Plugins → Markji bridge** and its detail page, enter the Markji OpenAPI Key (get one from the [Maimemo Open Platform](https://open.maimemo.com/)), and click "Save and test". The plugin first calls a read-only endpoint to validate it, then encrypts it with AES-256-GCM into the `secrets` table in `cache.db`; the page only shows `hasKey` and the last four characters, never the plaintext.
 
-```powershell
-# Windows: set a user environment variable, then restart DSH
-setx MAIMEMO_MARKJI_OPENAPI_TOKEN "<your token>"
-```
+The same detail page lets you choose the `cache.db` directory. Changing it copies the current `cache.db` (and `secret.key`, when the file DEK is used) to the target, keeps the original directory for rollback, and requires a DSH restart.
 
-```bash
-# macOS / Linux: write it to your shell profile, then reopen the terminal
-export MAIMEMO_MARKJI_OPENAPI_TOKEN="<your token>"
-```
-
-Never commit the token or write it into a config file. The plugin's `apiKey` config can override the token, but it is stored in plain text in the profile; normally you do not need it.
+> Optional bootstrap configuration: `apiKey` in `cordis.patch.yml` and the environment variables `MAIMEMO_MARKJI_OPENAPI_TOKEN` / `MAIMEMO_OPENAPI_TOKEN` can supply the key on first startup. The plugin encrypts the value into `cache.db` and clears it from the process environment. Prefer saving the key on the plugin detail page. Never commit a token.
 
 ## Quick start
 
@@ -82,21 +73,20 @@ Never commit the token or write it into a config file. The plugin's `apiKey` con
 markji_decks({ action: "list", refresh: true })
 markji_decks({ action: "get", deck: "<deck_id>" })
 markji_decks({ action: "chapter_get", chapter: "<chapter_id>", with_cards: true })
-markji_cards({ action: "list", query: "sorting", deck_name: "Algorithms" })
-markji_cards({ action: "list", query: "variabel init", query_mode: "fuzzy" })
-markji_cards({ action: "list", query: "^SPI\s+clock", query_mode: "regex", fields: ["text"] })
-markji_cards({ action: "list", scope: "deck", deck: "<deck_id>", predicate: { all: [{ field: "status", op: "eq", value: "dirty" }, { field: "updated_time", op: "gte", value: "2026-10-01" }] } })
+markji_cards({ action: "list", filter: { field: "text", op: "contains", value: "sorting" }, deck_name: "Algorithms" })
+markji_decks({ action: "list", filter: { field: "name", op: "contains", value: "Algorithms" } })
+markji_decks({ action: "chapter_list", filter: { field: "name", op: "regex", value: "^SPI\s+clock" } })
+markji_cards({ action: "list", scope: "deck", deck: "<deck_id>", filter: { all: [{ field: "status", op: "eq", value: "dirty" }, { field: "updated_time", op: "gte", value: "2026-10-01" }] } })
 markji_cards({ action: "get", card: "<card_id>" })
 markji_cards({ action: "get", cards: ["<card_id_1>", "<card_id_2>"] })
 markji_cards({ action: "syntax_help" })
 markji_cards({ action: "syntax_help", format: "picture" })
-markji_cards({ action: "validate", content: "<Markji rich text>" })
-markji_cards({ action: "validate", cards: ["<card_id_1>", "<card_id_2>"] })
-markji_cards({ action: "validate", contents: ["<Markji rich text 1>", "<Markji rich text 2>"] })
+markji_cards({ action: "create", deck: "<deck>", chapter: "<chapter>", new_cards: [{ content: "<Markji rich text>" }] })
 markji_sync({ action: "start", mode: "auto" })
+markji_sync({ action: "wait", task_id: "<task_id>", timeout_ms: 300000 })
 ```
 
-The first call pulls cloud data (it can take a while for large accounts); later reads use the local cache. Use `markji_sync({ action: "state" })` / `markji_sync({ action: "progress" })` to inspect state and progress; with `task_id` the result is only `{ task }`, without it `{ active, tasks }`. When DSH loads `dsh-tool-jobs`, `start` also returns `job_id`: progress appears in DSH's background-jobs list, a completion notice is delivered automatically, and `job_output` reads the result.
+The first call pulls cloud data (it can take a while for large accounts); later reads use the local cache. Use `markji_sync({ action: "state" })` / `markji_sync({ action: "progress" })` to inspect state and progress; with `task_id` the result is only `{ task }`, without it `{ active, tasks }`. `action: "wait"` blocks until the named task finishes; without `timeout_ms` it waits at most 30 minutes (the tool timeout), then returns the still-running `task` with `timed_out: true`. When DSH loads `dsh-tool-jobs`, `start` also returns `job_id`: progress appears in DSH's background-jobs list, `job_output` appends live progress, a completion notice is delivered automatically, and `job_output` carries the final result.
 
 ## Batch operations
 
@@ -104,8 +94,6 @@ Use these `markji_cards` actions when several cards are involved:
 
 ```text
 markji_cards({ action: "get", cards: ["<id1>", "<id2>"] })
-markji_cards({ action: "validate", cards: ["<id1>", "<id2>"] })              // validate existing cards
-markji_cards({ action: "validate", contents: ["<body1>", "<body2>"] })        // validate bodies not written yet
 markji_cards({ action: "create", deck: "<deck>", chapter: "<chapter>", new_cards: [
   { content: "<body1>" },
   { content: "<body2>", deck: "<deck2>", chapter: "<chapter2>" },
@@ -118,11 +106,11 @@ markji_cards({ action: "archive", cards: ["<id1>", "<id2>"] })
 markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>" })
 ```
 
-- Batch actions accept at most 50 items (multi-card reads, syntax `contents` / `cards`, `new_cards`, `updates`); archive and move use a non-empty array. `action=get` collapses duplicate ids and keeps request order; unknown ids are listed in `missing` and do not abort the batch.
+- Batch actions accept at most 50 items (multi-card reads, `new_cards`, `updates`, bulk conflict resolution); archive and move use a non-empty array. `action=get` collapses duplicate ids and keeps request order; unknown ids are listed in `missing` and do not abort the batch.
 - The top-level `deck` / `chapter` of `action=create` are optional defaults; each `new_cards` item may set its own `deck` / `chapter`, so one call can span chapters or decks. An item with no target is reported as a per-item error; each item's `order` is relative to its final target chapter.
-- Results list `ok` and errors per item. Writes are not a transaction: bad items are reported while the other items are still queued, and successful items still need `markji_sync({ action: "start" })`.
+- Results list `ok`, `warnings`, and errors per item. Writes are not a transaction: bad items (syntax errors, missing media, unknown targets) are not queued while the other items are; successful items still need `markji_sync({ action: "start" })`.
 - `action=get` omits the redundant `text` view by default; pass `include_text: true` when needed.
-- Batch syntax validation is local only and does not query media availability; `markji_sync` still performs the media preflight.
+- `create` / `update` perform both syntax and media checks by default; a failed media query returns `media_check_failed` for that item and can be retried. `checkMediaOnWrite: false` skips the extra query, but `markji_sync` still checks before pushing.
 - Batch output can exceed `maxOutputChars`; split large operations into smaller batches.
 
 ## Tools
@@ -132,8 +120,8 @@ Only four tools are registered; `action` selects the operation, and omitting it 
 | Tool | Default action | Purpose |
 | --- | --- | --- |
 | `markji_decks` | `list` | Decks (list / detail) and chapters (list / detail / create / rename / sort) |
-| `markji_cards` | `list` | Card list filters, read, create, update, move, archive, syntax help and validation |
-| `markji_sync` | `start` | Start sync, inspect progress / plugin state / failures, resolve conflicts |
+| `markji_cards` | `list` | Card list filters, read, create, update, move, archive, syntax help |
+| `markji_sync` | `start` | Start sync, wait for a task, inspect progress / plugin state / failures, resolve conflicts |
 | `markji_file` | none (required) | Upload a file to Markji or query file metadata |
 
 ### Actions
@@ -145,71 +133,19 @@ Only four tools are registered; `action` selects the operation, and omitting it 
 | `markji_decks` | `chapter_list` | List chapters for one deck or for every cached deck |
 | `markji_decks` | `chapter_get` | Read one chapter, optionally with card summaries |
 | `markji_decks` | `chapter_create` / `chapter_rename` / `chapter_sort` | Create / rename / sort chapters |
-| `markji_cards` | `list` | Paginate and filter by scope (all / deck / chapter), with substring, fuzzy, regex, and `predicate` condition trees; also filters by deck name, chapter name, and update time |
+| `markji_cards` | `list` | Paginate and filter by scope (all / deck / chapter) with a JSON `filter` condition tree; also filters by deck name, chapter name, and update time |
 | `markji_cards` | `get` | Read one or several cards by id; unknown ids are listed in `missing` |
 | `markji_cards` | `create` | Batch-create from `new_cards`, including across chapters or decks |
 | `markji_cards` | `update` | Update one card (`card` + `content`) or several (`updates`) |
 | `markji_cards` | `move` / `archive` | Move to another chapter / archive into the "Archive" chapter |
-| `markji_cards` | `validate` / `syntax_help` | Validate raw or cached content / look up raw Markji syntax |
+| `markji_cards` | `syntax_help` | Look up raw Markji syntax; create/update validate automatically |
 | `markji_sync` | `start` | Start background sync (pull / push / auto; resumable) |
+| `markji_sync` | `wait` | Wait for one sync task to finish; `timeout_ms` bounds the wait and a timeout returns `task.timed_out: true` |
 | `markji_sync` | `progress` | View sync task progress and history |
 | `markji_sync` | `state` | Plugin and cache overview |
 | `markji_sync` | `failures` | View failed cards, conflicts, and recovery advice |
-| `markji_sync` | `resolve` | Resolve a conflict (keep_local / keep_remote / use_content) |
+| `markji_sync` | `resolve` | Resolve one or up to 50 conflicts (keep_local / keep_remote / use_content; `ids` / `items`) |
 | `markji_file` | `upload` / `query` | Upload a file / query file metadata |
-
-### 2.4.0: search becomes a list filter
-
-- Removed the standalone `search` action / `markji_search`: all searches now go through `markji_cards` `list` and `markji_decks` `list` / `chapter_list`.
-- List actions gained `query_mode=predicate` and a `predicate` condition tree: `all` / `any` / `not`, 13 ops, and dot paths such as `cloud.revision`. Conditions read own properties only and are capped by depth and node count.
-- Added `scope` and `fields`: restrict the all / deck / chapter range and the fields `query` matches. When `scope` is omitted it is inferred from `deck` / `chapter` / `folder_id`; an explicit conflict is an error.
-- `markji_sync({ action: "progress", task_id })` returns only `{ task }`; without `task_id` it still returns `{ active, tasks }`.
-- Chapter lists always include `total`: with a deck they return `{ deck_id, deck_name, chapters, total }`, without one `{ decks, total }`; empty deck groups are omitted while a filter is active.
-- Batch operations are unchanged: `get` `cards`, `create` `new_cards`, `update` `updates`, `validate` `contents` / `cards`, and `move` / `archive` `cards` still handle many cards per call.
-
-### 2.3.0: compact return values
-
-List and sync actions no longer return environment details and empty fields that callers rarely use, reducing context usage:
-
-- Card `list` returns only `{ id, deck_name, chapter_name, snippet }`, adding `status` only when it is not `synced`; use `action=get` for full content and timestamps. Results no longer include `cache` or `filters`.
-- Deck / chapter lists no longer include `cache`. Only deck detail carries `description` / `updated_time`, and only chapter detail carries `revision` / `order` / `updated_time`; default-valued fields are omitted. `folders` keeps `id` / `name` / `deck_count` / optional `parent_id`, and decks link to them through `folder_id`.
-- Batch `action=get` now returns `{ cards, missing? }` instead of `ok` / `requested` / `found` and per-item wrappers.
-- Sync tasks keep only effective counters (zeros are omitted); `state` drops environment paths and timer internals, `failures` drops the repeated global recovery text (each item keeps its own `recovery`), and task history returns at most 3 entries.
-
-### 2.2.0: fuzzy and regex search
-
-The `markji_cards` list query (exposed by `search` in 2.2.0, merged into `list` in 2.4.0) now accepts `query_mode`:
-
-- `substring` (default): case-insensitive substring, the 2.1.0 behavior.
-- `fuzzy`: approximate matching that tolerates small typos, insertions, and deletions; results carry `score` (0-1) and sort best-first, and `min_score` tunes the threshold (default 0.6). It compares the whole query; space-separated terms must all match approximately, so search one short phrase at a time. When 3+ terms match no card fully, it anchors on the rarest terms and falls back to partial matches (`partial: true`, `fallback_terms`) with per-card `matched_terms`.
-- `regex`: treats `query` as a JavaScript regular expression; `regex_flags` accepts `i` / `m` / `s` / `u` (default `i`).
-
-`matched_by` reports whether the card body or id matched. Every list action shares the same query options. When nothing matches, the list includes a `hint`; a fuzzy partial fallback also sets `partial: true`, `fallback_terms`, and per-card `matched_terms`.
-
-### 2.1.0: sync as a DSH background job
-
-`markji_sync({ action: "start" })` now returns an optional `job_id`. When DSH loads `dsh-tool-jobs` and the call comes from a live session, the plugin registers the sync task as a DSH background job owned by that session: it appears in DSH's running background jobs, its progress follows the sync stage, `job_output` reads the task result, and DSH sends its standard completion notice when the job settles (completed, failed, or killed).
-
-Without `dsh-tool-jobs`, or when the call does not come from a session, no `job_id` is returned and behavior is identical to 2.0.0. Killing the DSH job cancels the sync at its next checkpoint: queued edits are kept, the stored task becomes `interrupted`, and it can be resumed with `markji_sync({ action: "start", resume: "<task_id>" })`. The `progress` / `state` / `failures` / `resolve` actions remain available.
-
-### Migrating from 1.x
-
-2.0.0 no longer registers the fine-grained 1.x tools; replace the old call with one tool plus an `action`. Fields are unchanged except that batch creation now uses `new_cards`:
-
-| 1.x tool | 2.0.0 call |
-| --- | --- |
-| `markji_chapters` / `markji_chapters_edit` | `markji_decks` `chapter_list` / `chapter_get` / `chapter_create` / `chapter_rename` / `chapter_sort` |
-| `markji_search` | `markji_cards` `list` (filter with `query` / `query_mode` / `predicate` / `fields` / `scope`) |
-| `markji_card_get` / `markji_cards_get` | `markji_cards` `get` |
-| `markji_card_syntax` | `markji_cards` `validate` or `syntax_help` |
-| `markji_card_create` / `markji_cards_create` | `markji_cards` `create` (batch field: `new_cards`) |
-| `markji_card_update` | `markji_cards` `update` |
-| `markji_card_archive` / `markji_cards_move` | `markji_cards` `archive` / `move` |
-| `markji_sync_status` | `markji_sync` `progress` |
-| `markji_status` | `markji_sync` `state` |
-| `markji_failures` | `markji_sync` `failures` |
-| `markji_conflict_resolve` | `markji_sync` `resolve` |
-| `markji_file` | unchanged (`action` still required) |
 
 ## Tool parameters and return values
 
@@ -217,32 +153,32 @@ Without `dsh-tool-jobs`, or when the call does not come from a session, no `job_
 
 | Tool / action | Parameters | Returns (main fields) |
 | --- | --- | --- |
-| `markji_decks` / `list` | `refresh?` `folder_id?` `scope?` `query?` `query_mode?` `predicate?` `fields?` `regex_flags?` `min_score?` | `{folders, decks, total}`; `folders` items are `{id, name, deck_count, parent_id?}` |
+| `markji_decks` / `list` | `refresh?` `folder_id?` `scope?` `filter?` | `{folders, decks, total}`; `folders` items are `{id, name, deck_count, parent_id?}` |
 | `markji_decks` / `get` | `deck` `refresh?` | `{deck, chapters}`; detail includes `description` / `updated_time` |
-| `markji_decks` / `chapter_list` | `deck?` `scope?` `refresh?` `query?` `query_mode?` `predicate?` `fields?` `regex_flags?` `min_score?` | With `deck`: `{deck_id, deck_name, chapters, total}`; without: `{decks, total}` |
+| `markji_decks` / `chapter_list` | `deck?` `scope?` `refresh?` `filter?` | With `deck`: `{deck_id, deck_name, chapters, total}`; without: `{decks, total}` |
 | `markji_decks` / `chapter_get` | `chapter` `deck?` `with_cards?` `refresh?` | `{deck_id, deck_name, chapter, cards?, total?}` |
 | `markji_decks` / `chapter_create` | `deck` `name` `order?` | `{ok, action, chapter_id, deck_id, status, pending, message}` |
 | `markji_decks` / `chapter_rename` | `chapter` `name` `deck?` | `{ok, action, chapter_id, status, pending, message}` |
 | `markji_decks` / `chapter_sort` | `deck` `chapter_ids` | `{ok, action, deck_id, chapters, status, pending, message}` |
-| `markji_cards` / `list` | `scope?` `deck?` `chapter?` `query?` `query_mode?` `predicate?` `fields?` `regex_flags?` `min_score?` `deck_name?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, cards}`; partial matches also add `partial` / `fallback_terms` / `hint` |
+| `markji_cards` / `list` | `scope?` `deck?` `chapter?` `filter?` `deck_name?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, cards}`; when a filter returns nothing it also carries `hint` |
 | `markji_cards` / `get` | `card?` `cards?` (1-50, deduplicated) `include_text?` | `{cards, missing?}`; `missing` appears only when some ids are unknown |
-| `markji_cards` / `create` | `new_cards` (1-50; each `{content, deck?, chapter?, order?, grammar_version?}`); top-level `deck?` `chapter?` are defaults | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`; top-level defaults are `null` when omitted |
-| `markji_cards` / `update` | `card` `content` `grammar_version?`, or `updates` (1-50, each `{card, content, grammar_version?}`) | single: `{ok, card_id, status, changed, pending, message}`; batch: `{ok, action, mode, total, updated, unchanged, failed, partial, results}` |
+| `markji_cards` / `create` | `new_cards` (1-50; each `{content, deck?, chapter?, order?, grammar_version?}`); top-level `deck?` `chapter?` are defaults | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`; failed items carry `errors` / `warnings` / `media` and are not queued |
+| `markji_cards` / `update` | `card` `content` `grammar_version?`, or `updates` (1-50, each `{card, content, grammar_version?}`) | single: `{ok, card_id, status, changed, pending, message, warnings?}`; batch: `{ok, action, mode, total, updated, unchanged, failed, partial, results}`; failed items are not queued |
 | `markji_cards` / `move` | `cards` `to_chapter` `deck?` `order?` | `{ok, moved, to_chapter_id, status, pending, message}` |
 | `markji_cards` / `archive` | `cards` (non-empty array) | `{ok, archived, content_updated, already_archived, moved, chapters, status, pending, message}` |
-| `markji_cards` / `validate` | `content` or `contents` or `cards` (only one) | single: `{ok, errors, warnings, stats, media}`; batch: `{ok, action, mode, source, total, valid, invalid, missing?, syntax_invalid?, results}` |
 | `markji_cards` / `syntax_help` | `format?` | `{ok, action, format, rules, nesting, formats}` |
 | `markji_sync` / `start` | `mode?: auto/pull/push` `full?` `resume?` | `{task, job_id?, already_running?}`; `job_id` requires DSH background-job support |
+| `markji_sync` / `wait` | `task_id` `timeout_ms?` | `{task}`; while still running after a timeout, `task.timed_out: true` |
 | `markji_sync` / `progress` | `task_id?` | With `task_id`: `{task}`; without: `{active, tasks}` |
 | `markji_sync` / `state` | none | `{version, configured, cache_file, cache, pending, conflicts, last_sync, last_error, active_task, tasks, auto_sync}` |
-| `markji_sync` / `failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, truncated?}`; each item has its own `recovery` |
-| `markji_sync` / `resolve` | `id` `strategy: keep_local/keep_remote/use_content` `content?` | `{ok, id, entity, strategy, state, changed}` |
+| `markji_sync` / `failures` | `card?` `deck?` `limit?` | `{ok, summary, conflicts, failed_cards, last_task_errors, batch_arguments, truncated?}`; each conflict carries single `recovery.arguments` / `recovery.batch_arguments`, and the top-level `batch_arguments` resolves the first 50 in one call |
+| `markji_sync` / `resolve` | `id` (single); or `ids` + `strategy`; or `items: [{id, strategy, content?}]` (≤50, per-item strategy) | single keeps `{ok, id, entity, strategy, state, changed}`; batch returns `{ok, total, resolved, failed, results:[{id, ok, changed, state?, strategy?, error?}]}` |
 | `markji_file` / `upload` | `path` `deck?` | `{file}` |
 | `markji_file` / `query` | `ids` `expires?` | `{files}` |
 
-### Predicate fields
+### `filter` fields
 
-`predicate` `field` supports dot paths over own properties. Allowed root fields per list:
+A `filter` condition's `field` supports dot paths over own properties. Allowed root fields per list:
 
 - Cards: `id`, `deck_id`, `deck_name`, `chapter_id`, `chapter_name`, `text`, `content`, `snippet`, `status`, `grammar_version`, `revision`, `updated_time`, `created_time`, `local`, `pending`, `conflict`, `last_error`, `cloud` (for example `cloud.revision`).
 - Decks: `id`, `name`, `description`, `folder_id`, `card_count`, `chapter_count`, `is_private`, `source`, `status`, `missing`, `created_time`, `updated_time`.
@@ -250,21 +186,18 @@ Without `dsh-tool-jobs`, or when the call does not come from a session, no `job_
 
 Each list maintains its field set independently. For example, passing `description` / `deck_name` to chapters, or `text` / `content` to decks, fails with `invalid_argument` instead of being silently ignored.
 
-String comparisons are case-insensitive by default (`case_sensitive: true` turns that off); numbers compare numerically; ISO times compare as strings (correct order for one timezone offset); unknown fields or ops and trees beyond the depth / node limits fail with `invalid_argument`.
+String comparisons are case-insensitive by default (`case_sensitive: true` turns that off); regex defaults to `i` and `flags` overrides it; numbers compare numerically; ISO times compare as strings (correct order for one timezone offset); unknown fields or ops and trees beyond the depth / node limits fail with `invalid_argument`.
 
 ### Syntax help
 
-Use the `validate` / `syntax_help` actions of `markji_cards`:
+Use the `syntax_help` action of `markji_cards` to query static syntax:
 
 ```text
 markji_cards({ action: "syntax_help" })                     // every format
 markji_cards({ action: "syntax_help", format: "picture" })  // just pictures
-markji_cards({ action: "validate", content: "<Markji rich text>" })      // validate content
-markji_cards({ action: "validate", contents: ["<body1>", "<body2>"] })    // validate several bodies
-markji_cards({ action: "validate", cards: ["<id1>", "<id2>"] })           // validate several existing cards
 ```
 
-In batch mode pass only one of `content`, `contents`, or `cards`. Each item is validated independently, so one bad item does not stop the others. `cards` validates the effective body (the pending edit when one exists).
+`create` / `update` validate syntax and media references before queueing. A syntax error returns `errors` with line / column and the item is not queued.
 
 For `action=syntax_help`, omit `format` or pass `all`; pass `basic` for just the general rules and nesting matrix. Supported format ids are `text-style`, `cloze`, `audio`, `card-ref`, `paragraph`, `choice`, `picture`, `formula`, and `answer-line`; the corresponding tag (for example `Pic`) and Chinese aliases (for example `图片`) are also accepted. Help is static and never inspects or rewrites content; the syntax follows the [Markji syntax guide](https://tutuji333.github.io/markji-faq/questions/content/card-syntax-guide/).
 
@@ -372,9 +305,10 @@ The defaults live in the bundle's `cordis.patch.yml`; all are optional:
 | Field | Default | Description |
 | --- | --- | --- |
 | `enabled` | `true` | Whether to register the tools and start auto sync |
-| `apiKey` | `''` | Optional token override (leave empty and use the environment variable) |
+| `apiKey` | `''` | Optional bootstrap input; normally save the key on the plugin page and keep this empty |
 | `baseUrl` | `https://open.maimemo.com/open` | API endpoint |
-| `dataDir` | `<home>/.dsh/dsh-markji-bridge` | Cache directory |
+| `dataDir` | `<home>/.dsh/dsh-markji-bridge` | Default cache directory; a directory saved on the plugin page wins |
+| `checkMediaOnWrite` | `true` | Query media files before create/update queues; false saves one request |
 | `grammarVersion` | `3` | Default grammar_version for new cards |
 | `requestTimeoutMs` | `20000` | Per-request timeout |
 | `maxRetries` | `3` | Retries for network errors / 429 / 5xx |
@@ -391,21 +325,21 @@ The defaults live in the bundle's `cordis.patch.yml`; all are optional:
 
 - Reads first do an incremental pull when the cache has expired; writes only update the local cache and enqueue changes.
 - `markji_sync mode=auto`: pull and three-way merge first, then push the local queue. A pull always happens before a push, so stale data never overwrites remote changes.
-- Before pushing a card, the engine validates each pending body and batch-calls `POST /api/v1/markji/files/query` for the ids in `Pic#ID/...`, `Pic#ID/...,MID/...`, and `Audio#...,ID/...`. Missing files are not written; the card stays queued and `markji_sync({ action: "failures" })` reports the recovery steps.
-- Conflicts do not block other cards. Resolve them with `keep_local` (keep the local edit and overwrite the cloud on the next push), `keep_remote` (accept the cloud version and discard the local edit), or `use_content` (replace the local pending content with the supplied content).
-- Sync tasks record progress and results, keeping the latest 20. If the process is interrupted, the task is marked `interrupted`; resume it with `markji_sync resume=<task_id>`.
+- `create` / `update` validate syntax and, by default, batch-call `POST /api/v1/markji/files/query` for the ids in `Pic#ID/...`, `Pic#ID/...,MID/...`, and `Audio#...,ID/...` before queueing; failed items are not queued and the rest of the batch continues. Before pushing, the engine repeats the same syntax + media preflight as the final gate (in case a file was deleted after queueing); missing files are not written, the card stays queued, and `markji_sync({ action: "failures" })` reports the recovery steps.
+- Conflicts do not block other cards. Resolve them with `keep_local` (keep the local edit and overwrite the cloud on the next push), `keep_remote` (accept the cloud version and discard the local edit), or `use_content` (replace the local pending content with the supplied content). For batches use `markji_sync({ action: "resolve", ids: [...], strategy: "keep_remote" })` or `items: [{ id, strategy, content? }]` to mix strategies, up to 50 per call; a single `id` call keeps the old shape.
+- Sync tasks record progress and results, keeping the latest 20. If the process is interrupted, the task is marked `interrupted`; resume it with `markji_sync resume=<task_id>`. To wait for one task, use `markji_sync({ action: "wait", task_id })` instead of polling.
 - Inspect failures or conflicts with `markji_sync({ action: "failures" })`, then run `markji_sync({ action: "start", mode: "push" })`.
 
 ## Performance and behavior
 
 - Reads prefer the local cache. When the cache is older than `pullTtlMs` (default 10 minutes) or `refresh: true` is passed, an incremental pull runs first.
-- Since 1.0.1, the fallback refresh for an unknown id pulls only decks marked as changed in the cloud, instead of pulling every deck. On a measured account with 5,265 cards / 82 chapters, renaming an unknown chapter returned `unknown_chapter` in about 0.8 seconds and an unknown card in about 0.3 seconds; the old full pull took about 12.5 seconds.
-- When a full refresh is actually needed, run `markji_sync({ action: "start", mode: "pull", full: true })` explicitly. It is a background task: it returns a `task` first, then use `markji_sync({ action: "progress" })` to track progress.
+- The fallback refresh for an unknown id pulls only decks marked as changed in the cloud, never every deck. On a measured account with 5,265 cards / 82 chapters, renaming an unknown chapter returned `unknown_chapter` in about 0.8 seconds and an unknown card in about 0.3 seconds.
+- When a full refresh is actually needed, run `markji_sync({ action: "start", mode: "pull", full: true })` explicitly. It is a background task: it returns a `task` first, then use `markji_sync({ action: "wait", task_id })` to wait for completion or `action: "progress"` to inspect progress.
 - Writes only update the local cache and return immediately; network requests happen in sync tasks or auto sync.
 - Auto sync runs after `idleQuietMs` (default 2 minutes) of quiet following the most recent tool call. When nothing is pending, it pulls every `autoPullMs` (default 15 minutes). After a failure it retries every `retryBackoffMs` (default 5 minutes).
 - Open conflicts pause auto push, but pulls continue.
 - Requests use a sliding-window rate limit (default 18 per 10 seconds, 36 per minute, 7,800 per 5 hours); concurrent syncs queue automatically.
-- Card content is limited to 100,000 characters; `markji_cards` `list` accepts `limit` up to 200 (unified in 2.4.0; the old `search` cap of 100 is gone), and batch entries accept at most 50 items each (archive / move are not capped).
+- Card content is limited to 100,000 characters; `markji_cards` `list` accepts `limit` up to 200, and batch entries accept at most 50 items each (archive / move are not capped).
 
 ## Error codes and troubleshooting
 
@@ -413,16 +347,17 @@ Tool errors usually look like `markji: <code>: <message> (hint: ...)`; malformed
 
 | Code | Meaning and action |
 | --- | --- |
-| `not_configured` | No token is available. Set `MAIMEMO_MARKJI_OPENAPI_TOKEN`, fully quit DSH, and restart so the host process sees the new environment variable. |
+| `not_configured` | No API Key is available. Open Plugins → Markji bridge and its detail page, enter the 64-character key, and click "Save and test"; no environment variable or config edit is needed. |
 | `unknown_deck` / `unknown_chapter` / `unknown_card` / `unknown_folder` | The id is not in the local cache. The fallback refresh already ran; if the object was created on another device, run `markji_sync({ action: "start", mode: "pull", full: true })` and retry. |
 | `invalid_argument` | Missing or wrongly typed argument, bad time format, incomplete `chapter_ids`, empty content, content over 100,000 characters, etc. Fix the arguments according to the message. |
 | `invalid_content` | Invalid card content (for example, empty after normalization). |
-| `invalid_card_content` | The card body failed raw Markji syntax validation. Use `markji_cards({ action: "validate" })` to see line / column and error codes, fix the content, then push again. |
-| `media_unavailable` | An image / mask / audio file id in the body cannot be found in Markji. Upload it with `markji_file`, then update the body with the returned `file.id`. |
-| `media_check_failed` | The pre-push media query failed (network, auth, etc.). The card stays queued; retry `markji_sync` after recovery. |
+| `invalid_card_content` | The card body failed raw Markji syntax validation. `create` / `update` return `errors` with line / column and do not queue the item; fix and retry. |
+| `media_unavailable` | An image / mask / audio file id in the body cannot be found in Markji. `create` / `update` fail without queueing; upload it with `markji_file`, then update the body with the returned `file.id`. |
+| `media_check_failed` | The media query failed (network, auth, etc.). Write items are not queued; retry. Failures during push keep the queue. |
+| `secret_corrupt` / `secret_key_invalid` / `secret_key_missing` | The ciphertext in `cache.db`, `secret.key`, or the Host credential DEK cannot be used (corrupt / replaced file, different user profile, or a lost DEK). Save the API Key again on the plugin page; the plugin never silently mints a new key or falls back to the environment; do not try to splice old ciphertext back. |
 | `conflict_open` | The card has an open conflict. Resolve it with `markji_sync({ action: "resolve" })` first. |
 | `unknown_conflict` | The conflict id does not exist or was already resolved. Fetch the current list with `markji_sync({ action: "failures" })`. |
-| `unknown_task` / `task_not_resumable` | The `resume` task id does not exist, or the task is not `interrupted` / has already finished. Check with `markji_sync({ action: "progress" })`. |
+| `unknown_task` / `task_not_resumable` | The `resume` / `wait` task id does not exist, or the task is not `interrupted` / has already finished. Check with `markji_sync({ action: "progress" })`. |
 | `deck_mismatch` | The target chapter or card does not belong to the specified deck. Check that the ids match the `deck` argument. |
 | `cache_busy` | Another DSH process holds `cache.write.lock`. Wait for it to finish and retry; do not delete the lock of a live process manually. |
 | `engine_unavailable` | The plugin engine did not load completely. Disable and re-enable the plugin, or restart DSH. |
@@ -433,19 +368,19 @@ Tool errors usually look like `markji: <code>: <message> (hint: ...)`; malformed
 
 Common issues:
 
-- **`configured: false` in `markji_sync({ action: "state" })`**: the DSH host process did not see the token. On Windows you must restart DSH after `setx`; on WSL / Linux, `export` it in the same shell that starts DSH, then restart DSH.
+- **`configured: false` in `markji_sync({ action: "state" })`**: open Plugins → Markji bridge and its detail page, enter the key, and save. If the page reports `secret_corrupt` / `secret_key_invalid` / `secret_key_missing`, save it again. Optional environment variables are read once on first startup and cleared.
 - **401 / 403**: the token is invalid, expired, or lacks OpenAPI permission; generate a new one on the platform. Do not put the token in `cordis.patch.yml` or commit it to the repository.
-- **The first call is slow**: the first call pulls all decks, chapters, and cards; thousands of cards usually take tens of seconds to a few minutes, which is expected. Watch the background task with `markji_sync({ action: "progress" })` instead of starting duplicate syncs.
+- **The first call is slow**: the first call pulls all decks, chapters, and cards; thousands of cards usually take tens of seconds to a few minutes, which is expected. Watch the background task with `markji_sync({ action: "wait", task_id })` / `action: "progress"` instead of starting duplicate syncs.
 - **A card just created on the phone or web is missing locally**: the fallback refresh pulls only changed decks. If the deck's `updated_time` did not change, run `markji_sync({ action: "start", mode: "pull", full: true })`.
 - **Auto sync is not pushing**: first check `markji_sync({ action: "failures" })` for open conflicts; auto push pauses while any are open. After resolving them, run `markji_sync({ action: "start", mode: "push" })`.
 - **`cache_busy` keeps appearing**: check whether another DSH process is using the same `dataDir`; close the extra process. Locks left by a crashed process are reclaimed after checking the owner pid / hostname.
-- **The cache is corrupted**: the plugin renames the old database to a backup, rebuilds it, and pulls again. Check the DSH logs and `markji_sync({ action: "state" }).last_error`.
-- **Using it under WSL**: DSH itself must run inside that WSL distribution's Linux environment; export the token in the shell that starts DSH. Keep the SQLite cache on the Linux filesystem (for example `~/.dsh/...`), not under `/mnt/c`, to avoid file-lock and performance problems.
+- **The cache is corrupted**: the plugin renames the original database to a backup, rebuilds it, and pulls again. Check the DSH logs and `markji_sync({ action: "state" }).last_error`.
+- **Using it under WSL**: DSH itself must run inside that WSL distribution's Linux environment; enter the key on the plugin page. Keep the SQLite cache on the Linux filesystem (for example `~/.dsh/...`), not under `/mnt/c`, to avoid file-lock and performance problems.
 
 ## Data and privacy
 
 - The cache is `<dataDir>/cache.db` (default `~/.dsh/dsh-markji-bridge`) and stays on the local machine; nothing is sent anywhere except the Markji API.
-- The plugin never writes the token to the cache or logs; tokens found in logs are replaced with `<redacted>`.
+- The API Key is stored only as AES-256-GCM ciphertext in the `secrets` table inside `cache.db`; the data key lives in the DSH credentials service (`dsh-markji-bridge/dek`) or in a user-only-readable `secret.key`. The plugin never writes the plaintext key to the cache, config files, or logs, and redacts it as `<redacted>` in logs.
 - Multiple DSH processes can share the cache directory; writes are serialized with `cache.write.lock`. Sharing across machines is not recommended.
 - If the cache is corrupted, it is renamed to a backup and pulled again.
 
@@ -460,27 +395,23 @@ Common issues:
 
 | Environment | Result |
 | --- | --- |
-| Windows + Node 25.2.1 | 2.4.0: unit 114/114, E2E 13/13, entry smoke 4 tools; unified list filters, `predicate`, and `progress task_id` were checked against a real-cache copy and in a live DSH. Real-account testing of sync, file / image upload, archive, remote-deletion conflict, chapter-deletion conflict, and crash resume was done on 1.x; the 2.1.0 DSH background-job integration and 2.2.0 fuzzy / regex search were also exercised in a live DSH. |
-| WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Last verified on 1.6.0: unit 97/97, E2E 13/13, entry smoke 19 tools; 2.0.0 has not been re-run in WSL. |
+| Windows + Node 25.2.1 | Unit 155/155, E2E 13/13, entry smoke 4 tools; a live DSH check exercised `markji_cards` / `markji_decks` `filter` (equality, contains, regex, cross-resource and unknown-field rejection) and confirmed the plugin settings section, tool registration, and cached reads. |
+| WSL2 Ubuntu 26.04 (Linux 6.18, Node v22.22.1) | Not re-run in this environment; the code uses only Node built-in modules. |
 | macOS | Not tested on real hardware; the code uses only Node built-in modules and should work. |
-
-The WSL verification ran the repository's tests and entry smoke check directly in Linux; it did not install a second DSH inside WSL. To actually use the plugin under WSL, DSH itself should also run in that distribution.
-
-2.0.0 consolidates the 19 fine-grained tools into four action-based tools and adds deck detail, chapter detail, and `with_cards`; chapter create / rename / sort reuse the existing engine. 2.1.0 connects sync tasks to DSH's native background-job mechanism instead of sending a plugin-specific completion message. 2.2.0 adds `fuzzy` approximate matching and `regex` regular-expression queries to card search while keeping the default `substring` behavior. 2.3.0 compacts list, search, read, and sync return values by removing repeated environment data, empty fields, and per-item wrappers. 2.4.0 merges search into list filtering: unified substring / fuzzy / regex / predicate modes, all / deck / chapter scopes, `fields` and `predicate`, plus single-task `progress` by `task_id`. Each list keeps its own field set and accepts only its own resource fields. These paths are covered by local unit tests, the entry smoke test, and the mock HTTP end-to-end test. Real-account checks in the table above were performed before these changes; this release did not repeat a real-account media query.
 
 ## Development and testing
 
 Node >= 22.13 is required. Run from the repository source:
 
 ```bash
-node --test "test/*.test.js"   # unit / integration tests (114)
+node --test "test/*.test.js"   # unit / integration tests (155)
 node test/e2e-mock.mjs         # mock-server end-to-end (13)
 node test/index-smoke.mjs      # entry smoke test (4 tools)
 ```
 
 There is also an internal independent verification suite used for pre-release cross-checking; it is not published in the repository. The public repository contains only the tests listed above.
 
-Tests must run from the repository source. Main files: `index.js` (entry and configuration), `lib/api.js` (HTTP client), `lib/store.js` (cache and write locks), `lib/sync.js` (sync engine), `lib/search.js` (substring / fuzzy / regex matching), `lib/predicate.js` (structured predicates), `lib/jobs.js` (DSH background-job bridge), `lib/plain-text.js` (plain-text conversion), `lib/card-syntax.js` (raw syntax validation), and `lib/tools.js` (tool definitions). The module contract is [DESIGN.md](./DESIGN.md).
+Tests must run from the repository source. Main files: `index.js` (entry and configuration), `lib/api.js` (HTTP client), `lib/store.js` (cache, write locks, and the secrets table), `lib/sync.js` (sync engine), `lib/filter.js` (JSON condition trees and regex matching), `lib/jobs.js` (DSH background-job bridge), `lib/plain-text.js` (plain-text conversion), `lib/card-syntax.js` (raw syntax validation), `lib/preflight.js` (write preflight), `lib/secret.js` (AES-256-GCM), `lib/settings.js` (settings RPC), `client.js` (plugin-page configuration section), and `lib/tools.js` (tool definitions). The module contract is [DESIGN.md](./DESIGN.md).
 
 ## License
 

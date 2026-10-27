@@ -255,9 +255,12 @@ test('a second engine start keeps a live task owned by another process', async (
     assert.equal(duplicate.already_running, true);
     assert.equal(duplicate.task.task_id, task.task_id);
 
+    const waitedFromB = b.engine.waitForTask(task.task_id, 5000);
     await hold;
     const done = await a.engine.waitForTask(task.task_id, 5000);
     assert.equal(done.status, 'completed', JSON.stringify(done));
+    const foreign = await waitedFromB;
+    assert.equal(foreign.status, 'completed', 'another engine process can wait on the shared task');
   } finally {
     if (a) await a.engine.stop();
     if (a) await a.store.close();

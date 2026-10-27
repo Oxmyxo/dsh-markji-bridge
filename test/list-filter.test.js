@@ -43,7 +43,7 @@ async function makeEngine(dir) {
   return { store, engine };
 }
 
-test('markji_cards list supports scope, fields, predicate and combined filters', async () => {
+test('markji_cards list supports scope and JSON filter trees', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'markji-filter-'));
   const { store, engine } = await makeEngine(dir);
   try {
@@ -56,19 +56,19 @@ test('markji_cards list supports scope, fields, predicate and combined filters',
     await assert.rejects(engine.listCards({ scope: 'chapter' }), /requires chapter/);
     await assert.rejects(engine.listCards({ scope: 'chapter', chapter: 'c1', deck: 'd2' }), /does not belong/);
 
-    const byDeckField = await engine.listCards({ query: 'STM32', fields: ['deck_name'] });
+    const byDeckField = await engine.listCards({ filter: { field: 'deck_name', op: 'contains', value: 'STM32' } });
     assert.deepEqual(byDeckField.cards.map((card) => card.id), ['k3']);
-    const byIdField = await engine.listCards({ query: '^k2$', query_mode: 'regex', fields: ['id'] });
+    const byIdField = await engine.listCards({ filter: { field: 'id', op: 'regex', value: '^k2$' } });
     assert.deepEqual(byIdField.cards.map((card) => card.id), ['k2']);
 
-    const synced = await engine.listCards({ query_mode: 'predicate', predicate: { field: 'status', op: 'eq', value: 'synced' } });
+    const synced = await engine.listCards({ filter: { field: 'status', op: 'eq', value: 'synced' } });
     assert.equal(synced.total, 3);
     const any = await engine.listCards({
-      predicate: { any: [{ field: 'id', op: 'eq', value: 'k1' }, { field: 'chapter_name', op: 'contains', value: 'SPI' }] },
+      filter: { any: [{ field: 'id', op: 'eq', value: 'k1' }, { field: 'chapter_name', op: 'contains', value: 'SPI' }] },
     });
     assert.deepEqual(any.cards.map((card) => card.id), ['k1', 'k3']);
     const recentNotStm = await engine.listCards({
-      predicate: {
+      filter: {
         all: [
           { field: 'updated_time', op: 'gte', value: '2026-10-18' },
           { not: { field: 'deck_name', op: 'contains', value: 'STM32' } },
@@ -76,42 +76,49 @@ test('markji_cards list supports scope, fields, predicate and combined filters',
       },
     });
     assert.deepEqual(recentNotStm.cards.map((card) => card.id), ['k2']);
-    const combined = await engine.listCards({ query: '变量', predicate: { field: 'deck_name', op: 'eq', value: 'c/c++' } });
+    const combined = await engine.listCards({
+      filter: {
+        all: [
+          { field: 'text', op: 'contains', value: '变量' },
+          { field: 'deck_name', op: 'eq', value: 'c/c++' },
+        ],
+      },
+    });
     assert.deepEqual(combined.cards.map((card) => card.id), ['k1']);
-    const regexPredicate = await engine.listCards({ predicate: { field: 'content', op: 'regex', value: 'SPI|指针' } });
-    assert.deepEqual(regexPredicate.cards.map((card) => card.id), ['k2', 'k3']);
+    const regexFilter = await engine.listCards({ filter: { field: 'content', op: 'regex', value: 'SPI|指针' } });
+    assert.deepEqual(regexFilter.cards.map((card) => card.id), ['k2', 'k3']);
+    assert.equal((await engine.listCards({ filter: {} })).total, 3);
 
-    await assert.rejects(engine.listCards({ predicate: { field: 'missing_field', op: 'eq', value: 1 } }), /unknown predicate field/);
-    await assert.rejects(engine.listCards({ predicate: { field: 'id', op: 'nope', value: 1 } }), /predicate op/);
-    await assert.rejects(engine.listCards({ query_mode: 'predicate', query: 'x' }), /query is not used/);
-    await assert.rejects(engine.listCards({ query_mode: 'predicate' }), /predicate is required/);
-    await assert.rejects(engine.listCards({ fields: ['nope'] }), /fields must be one of/);
+    await assert.rejects(engine.listCards({ filter: { field: 'missing_field', op: 'eq', value: 1 } }), /unknown filter field/);
+    await assert.rejects(engine.listCards({ filter: { field: 'id', op: 'nope', value: 1 } }), /filter op/);
+    await assert.rejects(engine.listCards({ filter: [] }), /filter must be an object/);
+    await assert.rejects(engine.listCards({ query: 'x' }), /"query" is no longer supported/);
+    await assert.rejects(engine.listCards({ query_mode: 'predicate' }), /"query_mode" is no longer supported/);
+    await assert.rejects(engine.listCards({ predicate: { field: 'id', op: 'eq', value: 'k1' } }), /"predicate" is no longer supported/);
+    await assert.rejects(engine.listCards({ fields: ['nope'] }), /"fields" is no longer supported/);
   } finally {
     await store.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test('listDecks and listChapters apply their own filters', async () => {
+test('listDecks and listChapters apply their own filter field sets', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'markji-list-filter-'));
   const { store, engine } = await makeEngine(dir);
   try {
-    const decks = await engine.listDecks({ query: 'stm32' });
+    const decks = await engine.listDecks({ filter: { field: 'name', op: 'contains', value: 'stm32' } });
     assert.deepEqual(decks.decks.map((deck) => deck.id), ['d2']);
     assert.equal(decks.total, 1);
-    const fuzzyDeck = await engine.listDecks({ query: 'STM32', query_mode: 'fuzzy' });
-    assert.equal(fuzzyDeck.decks[0].id, 'd2');
-    assert.ok(fuzzyDeck.decks[0].score > 0);
-    const bigDecks = await engine.listDecks({ predicate: { field: 'card_count', op: 'gte', value: 2 } });
+    const bigDecks = await engine.listDecks({ filter: { field: 'card_count', op: 'gte', value: 2 } });
     assert.deepEqual(bigDecks.decks.map((deck) => deck.id), ['d1']);
     await assert.rejects(engine.listDecks({ scope: 'folder' }), /requires folder_id/);
     await assert.rejects(engine.listDecks({ folder_id: 'missing' }), /Unknown folder/);
 
-    const chapters = await engine.listChapters({ query: 'spi' });
+    const chapters = await engine.listChapters({ filter: { field: 'name', op: 'contains', value: 'spi' } });
     assert.equal(chapters.total, 1);
     assert.deepEqual(chapters.decks.map((deck) => deck.deck_id), ['d2']);
     assert.deepEqual(chapters.decks[0].chapters.map((chapter) => chapter.id), ['c2']);
-    const largeChapter = await engine.listChapters({ predicate: { field: 'card_count', op: 'eq', value: 2 } });
+    const largeChapter = await engine.listChapters({ filter: { field: 'card_count', op: 'eq', value: 2 } });
     assert.equal(largeChapter.total, 1);
     assert.deepEqual(largeChapter.decks[0].chapters.map((chapter) => chapter.id), ['c1']);
     const byDeck = await engine.listChapters({ scope: 'deck', deck: 'd2' });
@@ -126,37 +133,33 @@ test('listDecks and listChapters apply their own filters', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
 test('each list rejects fields owned by another resource', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'markji-list-scope-'));
   const { store, engine } = await makeEngine(dir);
   try {
     // Decks: name / description / id and deck columns only.
-    const byDescription = await engine.listDecks({ query: '内存' });
+    const byDescription = await engine.listDecks({ filter: { field: 'description', op: 'contains', value: '内存' } });
     assert.deepEqual(byDescription.decks.map((deck) => deck.id), ['d1']);
-    const recentDeck = await engine.listDecks({ predicate: { field: 'updated_time', op: 'gte', value: '2026-05-02' } });
+    const recentDeck = await engine.listDecks({ filter: { field: 'updated_time', op: 'gte', value: '2026-05-02' } });
     assert.deepEqual(recentDeck.decks.map((deck) => deck.id), ['d2']);
-    await assert.rejects(engine.listDecks({ fields: ['text'] }), /markji_decks: fields must be one of/);
-    await assert.rejects(engine.listDecks({ predicate: { field: 'chapter_name', op: 'eq', value: 'SPI' } }), /unknown predicate field/);
-    await assert.rejects(engine.listDecks({ predicate: { field: 'content', op: 'contains', value: 'SPI' } }), /unknown predicate field/);
+    await assert.rejects(engine.listDecks({ filter: { field: 'chapter_name', op: 'eq', value: 'SPI' } }), /unknown filter field/);
+    await assert.rejects(engine.listDecks({ filter: { field: 'content', op: 'contains', value: 'SPI' } }), /unknown filter field/);
 
-    // Chapters: name / id text fields; chapter columns as predicates. There is
-    // no description and no deck_name predicate (use scope=deck for that).
-    const byName = await engine.listChapters({ query: '初始化', fields: ['name'] });
+    // Chapters: name / id and chapter columns only; no description or deck_name.
+    const byName = await engine.listChapters({ filter: { field: 'name', op: 'contains', value: '初始化' } });
     assert.equal(byName.total, 1);
     assert.deepEqual(byName.decks[0].chapters.map((chapter) => chapter.id), ['c1']);
-    const byOrder = await engine.listChapters({ predicate: { field: 'order', op: 'gte', value: 2 } });
+    const byOrder = await engine.listChapters({ filter: { field: 'order', op: 'gte', value: 2 } });
     assert.equal(byOrder.total, 1);
     assert.deepEqual(byOrder.decks[0].chapters.map((chapter) => chapter.id), ['c2']);
-    const byUpdated = await engine.listChapters({ predicate: { field: 'updated_time', op: 'gte', value: '2026-04-02' } });
+    const byUpdated = await engine.listChapters({ filter: { field: 'updated_time', op: 'gte', value: '2026-04-02' } });
     assert.deepEqual(byUpdated.decks[0].chapters.map((chapter) => chapter.id), ['c2']);
-    await assert.rejects(engine.listChapters({ fields: ['description'] }), /markji_chapters: fields must be one of: name, id/);
-    await assert.rejects(engine.listChapters({ fields: ['deck_name'] }), /markji_chapters: fields must be one of/);
-    await assert.rejects(engine.listChapters({ predicate: { field: 'description', op: 'eq', value: 'x' } }), /unknown predicate field/);
-    await assert.rejects(engine.listChapters({ predicate: { field: 'deck_name', op: 'eq', value: 'STM32 协议' } }), /unknown predicate field/);
+    await assert.rejects(engine.listChapters({ filter: { field: 'description', op: 'eq', value: 'x' } }), /unknown filter field/);
+    await assert.rejects(engine.listChapters({ filter: { field: 'deck_name', op: 'eq', value: 'STM32 协议' } }), /unknown filter field/);
 
     // Cards retain the wider card-only fields.
-    await assert.rejects(engine.listCards({ fields: ['description'] }), /markji_cards: fields must be one of/);
-    const byContent = await engine.listCards({ predicate: { field: 'content', op: 'contains', value: 'SPI' } });
+    const byContent = await engine.listCards({ filter: { field: 'content', op: 'contains', value: 'SPI' } });
     assert.deepEqual(byContent.cards.map((card) => card.id), ['k3']);
   } finally {
     await store.close();

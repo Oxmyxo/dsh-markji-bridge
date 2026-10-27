@@ -43,8 +43,8 @@ async function makeEngine(dir) {
   return { store, engine };
 }
 
-test('markji_cards list filters by deck name, chapter name, content and updated time', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'markji-search-'));
+test('markji_cards list filters by deck name, chapter name, plain text and updated time', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'markji-filter-list-'));
   const { store, engine } = await makeEngine(dir);
   try {
     const all = await engine.listCards({});
@@ -59,10 +59,10 @@ test('markji_cards list filters by deck name, chapter name, content and updated 
     const byChapter = await engine.listCards({ chapter_name: 'spi' });
     assert.deepEqual(byChapter.cards.map((card) => card.id), ['k3']);
 
-    const byContent = await engine.listCards({ query: '变量' });
-    assert.equal(byContent.total, 1);
-    assert.equal(byContent.cards[0].id, 'k1');
-    assert.match(byContent.cards[0].snippet, /变量/);
+    const byText = await engine.listCards({ filter: { field: 'text', op: 'contains', value: '变量' } });
+    assert.equal(byText.total, 1);
+    assert.equal(byText.cards[0].id, 'k1');
+    assert.match(byText.cards[0].snippet, /变量/);
 
     const byTime = await engine.listCards({ updated_after: '2026-10-01' });
     assert.deepEqual(byTime.cards.map((card) => card.id), ['k2', 'k3']);
@@ -83,65 +83,36 @@ test('markji_cards list filters by deck name, chapter name, content and updated 
   }
 });
 
-test('search supports fuzzy, regex and query flags', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'markji-search-modes-'));
+test('filter trees support regex, case sensitivity and nested groups', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'markji-filter-modes-'));
   const { store, engine } = await makeEngine(dir);
   try {
-    const fuzzy = await engine.listCards({ query: '变量初始话', query_mode: 'fuzzy' });
-    assert.equal(fuzzy.total, 1);
-    assert.equal(fuzzy.cards[0].id, 'k1');
-    assert.equal(fuzzy.cards[0].matched_by, 'text');
-    assert.ok(fuzzy.cards[0].score >= 0.6 && fuzzy.cards[0].score <= 1, JSON.stringify(fuzzy.cards[0]));
-    assert.match(fuzzy.cards[0].snippet, /变量/);
-    assert.equal(fuzzy.filters, undefined);
-
-    const strictFuzzy = await engine.listCards({ query: '变量初始话', query_mode: 'fuzzy', min_score: 0.9 });
-    assert.equal(strictFuzzy.total, 0);
-
-    const multiTerm = await engine.listCards({ query: '变量 初始化', query_mode: 'fuzzy' });
-    assert.deepEqual(multiTerm.cards.map((card) => card.id), ['k1']);
-    const noisy = await engine.listCards({ query: '变量 指针', query_mode: 'fuzzy' });
-    assert.equal(noisy.total, 0);
-    const partial = await engine.listCards({ query: '变量 初始化 指针', query_mode: 'fuzzy' });
-    assert.equal(partial.partial, true);
-    assert.equal(partial.cards[0].id, 'k1');
-    assert.deepEqual(partial.cards[0].matched_terms, ['变量', '初始化']);
-    assert.equal(partial.fallback_terms.length, 3);
-    assert.ok(partial.cards[0].score > 0);
-    assert.match(partial.hint, /partial matches/);
-    const missing = await engine.listCards({ query: '变量 指针 时钟', query_mode: 'fuzzy' });
-    assert.equal(missing.partial, true);
-    assert.equal(missing.total, 3);
-    assert.equal(missing.fallback_terms.length, 3);
-    assert.ok(missing.cards.every((card) => Array.isArray(card.matched_terms) && card.matched_terms.length === 1));
-    assert.match(missing.hint, /partial matches/);
-    const missingList = await engine.listCards({ query: '变量 指针 时钟', query_mode: 'fuzzy' });
-    assert.equal(missingList.partial, true);
-    assert.equal(missingList.total, 3);
-    assert.match(missingList.hint, /partial matches/);
-
-    const regex = await engine.listCards({ query: '变量|指针', query_mode: 'regex' });
+    const regex = await engine.listCards({ filter: { field: 'text', op: 'regex', value: '变量|指针' } });
     assert.deepEqual(regex.cards.map((card) => card.id), ['k1', 'k2']);
-    assert.equal(regex.filters, undefined);
 
-    const insensitive = await engine.listCards({ query: 'spi', query_mode: 'regex' });
+    const insensitive = await engine.listCards({ filter: { field: 'text', op: 'regex', value: 'spi' } });
     assert.deepEqual(insensitive.cards.map((card) => card.id), ['k3']);
-    const sensitive = await engine.listCards({ query: 'spi', query_mode: 'regex', regex_flags: 'm' });
+    const sensitive = await engine.listCards({ filter: { field: 'text', op: 'regex', value: 'spi', case_sensitive: true } });
     assert.equal(sensitive.total, 0);
+    const flagsSensitive = await engine.listCards({ filter: { field: 'text', op: 'regex', value: 'spi', flags: 'm' } });
+    assert.equal(flagsSensitive.total, 0);
 
-    const byId = await engine.listCards({ query: '^k[12]$', query_mode: 'regex' });
+    const byId = await engine.listCards({ filter: { field: 'id', op: 'regex', value: '^k[12]$' } });
     assert.deepEqual(byId.cards.map((card) => card.id), ['k1', 'k2']);
-    assert.equal(byId.cards[0].matched_by, 'id');
 
-    const listed = await engine.listCards({ query: '变量初始话', query_mode: 'fuzzy' });
-    assert.equal(listed.total, 1);
-    assert.equal(listed.cards[0].id, 'k1');
-    assert.equal(listed.cards[0].matched_by, 'text');
+    const any = await engine.listCards({
+      filter: { any: [{ field: 'id', op: 'eq', value: 'k1' }, { field: 'chapter_name', op: 'contains', value: 'SPI' }] },
+    });
+    assert.deepEqual(any.cards.map((card) => card.id), ['k1', 'k3']);
+    const notStm = await engine.listCards({
+      filter: { all: [{ field: 'updated_time', op: 'gte', value: '2026-10-18' }, { not: { field: 'deck_name', op: 'contains', value: 'STM32' } }] },
+    });
+    assert.deepEqual(notStm.cards.map((card) => card.id), ['k2']);
 
-    await assert.rejects(engine.listCards({ query: '[', query_mode: 'regex' }), /valid regular expression/);
-    await assert.rejects(engine.listCards({ query: 'spi', query_mode: 'regex', regex_flags: 'g' }), /regex_flags/);
-    await assert.rejects(engine.listCards({ query: 'spi', query_mode: 'fuzzy', min_score: 2 }), /min_score/);
-    await assert.rejects(engine.listCards({ query: 'spi', query_mode: 'wildcard' }), /query_mode/);
+    await assert.rejects(engine.listCards({ filter: { field: 'text', op: 'regex', value: '[' } }), /valid regular expression/);
+    await assert.rejects(engine.listCards({ filter: { field: 'text', op: 'regex', value: 'spi', flags: 'g' } }), /flags/);
+    await assert.rejects(engine.listCards({ filter: { field: 'text', op: 'eq', value: 'x', nope: 1 } }), /unknown filter key/);
+    await assert.rejects(engine.listCards({ filter: { field: 'text', op: 'wildcard', value: 'x' } }), /filter op/);
   } finally {
     await store.close();
     await rm(dir, { recursive: true, force: true });

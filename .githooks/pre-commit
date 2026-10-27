@@ -1,0 +1,15 @@
+#!/bin/sh
+# Reject staged text files containing a 64-hex token-like value.
+# Install once with: git config core.hooksPath .githooks
+set -eu
+hits=0
+for file in $(git diff --cached --name-only --diff-filter=ACMR); do
+  [ -n "$file" ] || continue
+  [ -f "$file" ] || continue
+  if grep -Iq . "$file" 2>/dev/null && grep -Eq '[0-9a-fA-F]{64}' "$file"; then
+    echo "pre-commit: possible 64-hex secret in $file" >&2
+    echo "pre-commit: store the Markji token in the plugin settings page, not in source." >&2
+    hits=1
+  fi
+done
+[ "$hits" -eq 0 ] || exit 1
