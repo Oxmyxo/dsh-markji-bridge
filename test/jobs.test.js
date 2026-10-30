@@ -26,8 +26,8 @@ function task(overrides = {}) {
 test('job labels, progress and summary describe the task', () => {
   const running = task();
   assert.equal(syncJobLabel(running), 'Markji sync (auto)');
-  assert.match(syncJobProgress(running), /pull: deck 1\/3/);
-  assert.match(syncJobProgress(running), /decks 1\/3/);
+  assert.match(syncJobProgress(running), /1\/3 decks/);
+  assert.doesNotMatch(syncJobProgress(running), /pull: deck/);
   const completed = task({
     status: 'completed',
     report: { pull: { decks: 3, cards: 9 }, push: { cards_created: 2, cards_updated: 1 }, conflicts: [], errors: [] },
@@ -37,6 +37,26 @@ test('job labels, progress and summary describe the task', () => {
   assert.equal(syncJobOutcome(completed).status, 'completed');
   assert.equal(syncJobOutcome(task({ status: 'failed' })).status, 'failed');
   assert.equal(syncJobOutcome(task({ status: 'interrupted' })).status, 'killed');
+});
+
+test('job progress shows current and total for push stages', () => {
+  const pushing = task({
+    stage: 'push',
+    progress: {
+      message: 'push: cards_create 3/10',
+      push_stage: 'cards_create',
+      push_done: 3,
+      push_total: 10,
+      cards_created: 2,
+      cards_updated: 1,
+    },
+  });
+  assert.equal(syncJobProgress(pushing), 'cards_create 3/10 · created 2 / updated 1');
+  const starting = task({
+    stage: 'push',
+    progress: { message: 'push: chapters_create', push_stage: 'chapters_create', push_done: 0, push_total: 0 },
+  });
+  assert.equal(syncJobProgress(starting), 'push: chapters_create');
 });
 
 test('startSyncJob mirrors progress and settles with the task', async () => {
@@ -72,13 +92,27 @@ test('startSyncJob mirrors progress and settles with the task', async () => {
   const hooks = spec.run({ updateProgress: (line) => updates.push(line), append: (text) => output.push(text) });
   assert.equal(updates.length, 1, 'seeds progress immediately');
   assert.equal(output.length, 1, 'seeds job_output with the current progress');
-  assert.match(output[0], /deck 1\/3/);
+  assert.match(output[0], /1\/3 decks/);
   progress.get('sync_abc')(task());
   assert.equal(output.length, 1, 'an identical immediate snapshot is not appended twice');
   progress.get('sync_abc')(task({ progress: { message: 'pull: deck 2/3', decks_total: 3, decks_done: 2, cards: 20 } }));
-  assert.match(updates.at(-1), /deck 2\/3/);
+  assert.match(updates.at(-1), /2\/3 decks/);
   assert.equal(output.length, 2, 'each changed progress snapshot is appended for job_output');
-  assert.match(output.at(-1), /deck 2\/3/);
+  assert.match(output.at(-1), /2\/3 decks/);
+  progress.get('sync_abc')(task({
+    stage: 'push',
+    progress: {
+      message: 'push: cards_create 3/10',
+      push_stage: 'cards_create',
+      push_done: 3,
+      push_total: 10,
+      cards_created: 2,
+      cards_updated: 1,
+    },
+  }));
+  assert.match(updates.at(-1), /cards_create 3\/10/);
+  assert.equal(output.length, 3, 'push snapshots with current/total are appended');
+  assert.match(output.at(-1), /cards_create 3\/10/);
 
   terminal.get('sync_abc')(task({ status: 'completed', report: { pull: { decks: 3, cards: 20 }, push: { cards_created: 1, cards_updated: 2 }, conflicts: [], errors: [] } }));
   const outcome = await hooks.done;

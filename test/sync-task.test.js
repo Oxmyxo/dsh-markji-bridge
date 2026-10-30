@@ -291,6 +291,46 @@ test('watchTaskProgress and watchTask mirror live and terminal state', async () 
   }
 });
 
+test('push progress exposes current and total items', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'markji-task-push-progress-'));
+  const mock = await startMockMarkji({ token: 'task-token-push-progress' });
+  let engine = null;
+  let store = null;
+  try {
+    const deck = mock.newDeck('推送进度牌组', { chapters: ['甲'] });
+    const chapter = mock.state.chapters.find((c) => c.deck_id === deck.id && c.name === '甲');
+    ({ engine, store } = makeEngine(dir, mock));
+    await engine.listDecks({ refresh: true });
+    for (let index = 0; index < 3; index += 1) {
+      await engine.createCard({ deck: deck.id, chapter: chapter.id, content: '推送进度卡片 ' + index });
+    }
+    await engine.ready();
+    const started = await engine.startSync({ mode: 'push' });
+    const views = [];
+    assert.equal(engine.watchTaskProgress(started.task.task_id, (view) => views.push(view)), true);
+    const done = await engine.waitForTask(started.task.task_id, 20000);
+    assert.equal(done.status, 'completed', JSON.stringify(done.error));
+    const creates = views.filter(
+      (view) => view.stage === 'push' && view.progress && view.progress.push_stage === 'cards_create',
+    );
+    assert.ok(creates.length > 0, 'push progress was observed');
+    const counts = creates.map((view) => [view.progress.push_done, view.progress.push_total]);
+    assert.ok(
+      counts.some(([current, total]) => current === 3 && total === 3),
+      'progress reaches current == total: ' + JSON.stringify(counts),
+    );
+    assert.ok(
+      counts.some(([current, total]) => total === 3 && current > 0 && current < 3),
+      'a mid-stage current/total snapshot is exposed: ' + JSON.stringify(counts),
+    );
+    await engine.stop();
+    await store.close();
+  } finally {
+    await mock.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('cancelTask stops a running task and leaves it resumable', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'markji-task-cancel-'));
   const mock = await startMockMarkji({ token: 'task-token-cancel' });

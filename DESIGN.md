@@ -554,14 +554,16 @@ mutex-queued behind any running sync) and returns a task view at once.
       status: 'running'|'completed'|'failed'|'interrupted',
       started_at, finished_at: number|null,
       stage: 'starting'|'pull'|'push'|'done',
-      progress: { message, decks_total, decks_done, <nonzero counters> },
+      progress: { message, decks_total, decks_done,
+                  push_stage?, push_done?, push_total?, <nonzero counters> },
       resume_count: number,
       error?: { code, message },
       hint?: string,                // running/interrupted/failed guidance
       report?: SyncReport,          // compact copy once completed
     }
     // task.updated_at and zero-valued counters stay internal. progress keeps
-    // decks_total/decks_done plus only nonzero counters.
+    // decks_total/decks_done for pull, push_stage/push_done/push_total for the
+    // current push stage, plus only nonzero counters.
 
 Rules:
 
@@ -623,8 +625,10 @@ notification. It is optional at runtime:
   run() registers engine.watchTaskProgress (immediate snapshot, then every applied progress
   event -> handle.updateProgress plus one handle.append line when the rendered progress line
   changes) and engine.watchTask (terminal view -> append a report summary, then settle the
-  returned done promise with { status, detail, result: <task view> }). job_output therefore
-  streams live progress instead of receiving only the terminal summary. A running job returns
+  returned done promise with { status, detail, result: <task view> }). The rendered line shows
+  the current/total progress: `2/5 decks` while pulling and `cards_create 12/50` while
+  pushing, so job_output streams live item-level progress instead of receiving only the
+  terminal summary. A running job returns
   { cancel(reason) { engine.cancelTask(task_id) }, done }.
 - Mapping: completed -> completed, failed -> failed, interrupted/other -> killed. JobOutcome.result
   is a serialized task-view string (DSH interpolates it into job_output; an object would render

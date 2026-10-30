@@ -1,7 +1,7 @@
 {
   "name": "dsh-markji-bridge",
-  "version": "2.7.0",
-  "description": "Give a DSH agent Markji (maimemo) cards through four consolidated tools: decks and chapters, card reads/writes/syntax/archive/move, sync/state/failures/conflict resolution, and uncached file upload/query. Local SQLite cache with inline content, unified list filters with a JSON condition tree and all/deck/chapter scopes, queued batch edits (including cross-chapter / cross-deck creation), automatic syntax + media preflight on create/update, remote-deletion detection, background sync with live job output, wait, crash-resume, 3-way merge, bulk conflict resolution, and a configuration section on the plugin page that stores the API Key encrypted in cache.db.",
+  "version": "2.7.1",
+  "description": "Give a DSH agent Markji (maimemo) cards through four consolidated tools: decks and chapters, card reads/writes/syntax/archive/move, sync/state/failures/conflict resolution, and uncached file upload/query. Local SQLite cache with inline content, unified list filters with a JSON condition tree and all/deck/chapter scopes, queued batch edits (including cross-chapter / cross-deck creation), automatic syntax + media preflight on create/update, remote-deletion detection, background sync with live current/total job output, wait, crash-resume, 3-way merge, bulk conflict resolution, and a configuration section on the plugin page that stores the API Key encrypted in cache.db.",
   "type": "module",
   "license": "MIT",
   "repository": {

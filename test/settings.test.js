@@ -43,7 +43,7 @@ async function makeSettings(overrides = {}) {
   const engine = {
     async ready() {},
     status() {
-      return { version: '2.7.0', cache_file: join(active, 'cache.db'), cache: { cards: 3 }, last_sync: 12345, active_task: null };
+      return { version: '2.7.1', cache_file: join(active, 'cache.db'), cache: { cards: 3 }, last_sync: 12345, active_task: null };
     },
   };
   const settings = createSettings({

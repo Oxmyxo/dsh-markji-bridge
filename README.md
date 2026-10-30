@@ -19,7 +19,7 @@
 - **安全写入**：修改先排队，推送前先拉取远端变更并三方合并，不会用过期的本地缓存覆盖云端；冲突按卡片去重，可逐条解决。
 - **插件页与加密凭证**：插件详情页可填 Markji API Key，并选择 `cache.db` 目录。Key 只以 AES-256-GCM 密文写入 `cache.db` 的 `secrets` 表；数据密钥由 DSH 凭据服务或仅当前用户可读的 `secret.key` 保存，配置文件和源码里不会出现明文 token。
 - **自动写前校验与媒体预检**：`markji_cards` 的 `action=syntax_help` 可按格式或全部查询原始 Markji 语法；`create` / `update` 在入队前自动校验每条正文，并默认批量查询 `Pic` / `Audio` 引用的文件 id（`checkMediaOnWrite: false` 可跳过媒体查询）。语法错误、文件缺失或查询失败会让该条直接失败且不产生待推送卡，批量中的其他项继续。`markji_sync` 推送前仍保留同一套预检作为最后一道闸。
-- **后台同步**：同步任务立即返回句柄，可查进度；进程崩溃或插件重启后用同一句柄续跑，不重复创建云端对象。DSH 加载了 `dsh-tool-jobs` 时，`markji_sync({ action: "start" })` 还会把任务登记为当前会话拥有的 DSH 后台任务，返回 `job_id`；任务出现在「正在运行的后台任务」中，`job_output` 会随同步进度实时追加输出，结束后由 DSH 发送完成通知；也可以 `markji_sync({ action: "wait", task_id })` 阻塞到该任务结束（可选 `timeout_ms`，超时返回 `task.timed_out: true`）。终止后台任务会在下一个检查点取消同步，任务变为 `interrupted`，仍可 `resume`。
+- **后台同步**：同步任务立即返回句柄，可查进度；进程崩溃或插件重启后用同一句柄续跑，不重复创建云端对象。DSH 加载了 `dsh-tool-jobs` 时，`markji_sync({ action: "start" })` 还会把任务登记为当前会话拥有的 DSH 后台任务，返回 `job_id`；任务出现在「正在运行的后台任务」中，`job_output` 会随同步进度实时追加输出，并显示当前阶段与 `done/total`（拉取为 `2/5 decks`，推送为 `cards_create 12/50`），结束后由 DSH 发送完成通知；也可以 `markji_sync({ action: "wait", task_id })` 阻塞到该任务结束（可选 `timeout_ms`，超时返回 `task.timed_out: true`）。终止后台任务会在下一个检查点取消同步，任务变为 `interrupted`，仍可 `resume`。
 - **归档与章节操作**：`markji_cards({ action: "archive" })` 把卡片移入同卡组「归档」章节并在正文插入归档说明，重复调用幂等；`markji_decks` 支持章节详情、新建、重命名和排序（provider 不提供章节删除接口）。
 - **多进程安全**：同一台机器的多个 DSH 进程可共用一个缓存目录，写入通过文件锁串行。
 
@@ -242,6 +242,7 @@ SyncTask = {
   started_at, finished_at, resume_count,
   progress: {
     message, decks_total, decks_done,
+    push_stage?, push_done?, push_total?,   // 推送阶段与当前项/总数
     chapters?, cards?, cards_deleted?, adopted_cards?, adopted_chapters?,
     conflicts_created?, chapters_created?, chapters_renamed?, chapters_sorted?,
     cards_created?, cards_updated?, cards_moved?, errors?,
