@@ -63,6 +63,8 @@ plugin_manager set_plugin  target=include:dsh-markji-bridge  enabled=true
 
 在 DSH 的**插件 → 墨墨记忆卡桥接**详情页里填写 Markji OpenAPI Key（在[墨墨开放平台](https://open.maimemo.com/)获取），点「保存并测试」：插件会先调用一次只读接口校验，通过后用 AES-256-GCM 加密写入 `cache.db` 的 `secrets` 表，页面只显示 `hasKey` 和尾 4 位，不回显明文。
 
+点「测试」时，输入框留空会在 Host 端测试已保存的 Key，无需重新粘贴；输入新 Key 则只测试、不保存。Key 输入始终掩码显示，不提供明文显示按钮。设置页使用 DSH 当前主题颜色，禁用按钮与长路径在深浅主题、窄窗口下均有独立样式。
+
 同一个插件详情页可以选择 `cache.db` 所在目录：修改时会把现有 `cache.db`（以及 `secret.key`，如果使用文件 DEK）复制到新目录，原目录保留以便回退；需要重启 DSH 生效。
 
 > 可选引导配置：`cordis.patch.yml` 的 `apiKey`、环境变量 `MAIMEMO_MARKJI_OPENAPI_TOKEN` / `MAIMEMO_OPENAPI_TOKEN` 可作为首次启动的输入；插件启动时会把它们加密写入 `cache.db` 并从进程环境清除。推荐直接在插件详情页配置。不要提交 token。

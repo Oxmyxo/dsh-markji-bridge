@@ -63,6 +63,8 @@ plugin_manager set_plugin  target=include:dsh-markji-bridge  enabled=true
 
 Open **Plugins → Markji bridge** and its detail page, enter the Markji OpenAPI Key (get one from the [Maimemo Open Platform](https://open.maimemo.com/)), and click "Save and test". The plugin first calls a read-only endpoint to validate it, then encrypts it with AES-256-GCM into the `secrets` table in `cache.db`; the page only shows `hasKey` and the last four characters, never the plaintext.
 
+Click "Test" with an empty input to validate the saved key on the Host without pasting it again. A newly entered key is tested without being saved. The input always stays masked; there is no plaintext reveal button. Settings use current DSH theme tokens, with separate disabled-button styling and wrapping for long paths.
+
 The same detail page lets you choose the `cache.db` directory. Changing it copies the current `cache.db` (and `secret.key`, when the file DEK is used) to the target, keeps the original directory for rollback, and requires a DSH restart.
 
 > Optional bootstrap configuration: `apiKey` in `cordis.patch.yml` and the environment variables `MAIMEMO_MARKJI_OPENAPI_TOKEN` / `MAIMEMO_OPENAPI_TOKEN` can supply the key on first startup. The plugin encrypts the value into `cache.db` and clears it from the process environment. Prefer saving the key on the plugin detail page. Never commit a token.

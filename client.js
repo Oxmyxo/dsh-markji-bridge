@@ -33,8 +33,8 @@ window.__ModuleLoader__.load({
         saveTest: '保存并测试',
         test: '测试',
         clear: '清除 Key',
-        show: '显示',
-        hide: '隐藏',
+        testOk: 'API Key 测试通过（未修改已保存的 Key）。',
+        testHint: '输入新 Key 可仅测试不保存；留空时测试已保存的 Key。',
         cacheSection: 'cache.db 位置',
         cacheHint: '当前生效目录。切换时会复制现有 cache.db（不移动，保留回退），需要重启 DSH 生效。',
         pick: '选择目录…',
@@ -70,8 +70,8 @@ window.__ModuleLoader__.load({
         saveTest: 'Save and test',
         test: 'Test',
         clear: 'Clear key',
-        show: 'Show',
-        hide: 'Hide',
+        testOk: 'API Key test passed (the saved key was not changed).',
+        testHint: 'Test a new key without saving, or leave blank to test the saved key.',
         cacheSection: 'cache.db location',
         cacheHint: 'Active directory. Changing it copies cache.db (keeping the old files for rollback); restart DSH to apply.',
         pick: 'Choose directory…',
@@ -109,30 +109,31 @@ window.__ModuleLoader__.load({
     var pluginContext = null;
 
     var CSS = [
-      '.dmb-wrap{display:flex;flex-direction:column;gap:14px;font-size:13px;color:var(--dsw-alias-text-primary,#e6e6e6)}',
-      '.dmb-card{border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.24));border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;background:var(--dsw-alias-bg-elevated,rgba(127,127,127,.05))}',
-      '.dmb-head{display:flex;align-items:center;justify-content:space-between;gap:12px}',
+      '.dmb-wrap{display:flex;flex-direction:column;gap:14px;min-width:0;font-size:13px;color:var(--dsw-alias-label-primary,#202020)}',
+      '.dmb-wrap *{box-sizing:border-box}',
+      '.dmb-card{min-width:0;border:1px solid var(--dsw-alias-border-l1,#d8d8d8);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;background:var(--dsw-alias-bg-layer-1,#fff)}',
+      '.dmb-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}',
       '.dmb-title{font-weight:600;font-size:14px}',
-      '.dmb-sub{color:var(--dsw-alias-text-secondary,#a8a8a8);line-height:1.5}',
-      '.dmb-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
-      '.dmb-label{font-weight:500;min-width:88px}',
-      '.dmb-input{flex:1 1 260px;min-width:180px;padding:7px 9px;border-radius:7px;border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.3));background:var(--dsw-alias-bg-primary,rgba(0,0,0,.15));color:inherit;font-family:inherit;font-size:13px}',
-      '.dmb-input:focus{outline:2px solid var(--dsw-alias-brand-primary,#4d8bff);outline-offset:1px}',
-      '.dmb-btn{padding:6px 12px;border-radius:7px;border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.3));background:var(--dsw-alias-bg-elevated,rgba(127,127,127,.1));color:inherit;cursor:pointer;font-size:13px}',
-      '.dmb-btn:hover:not(:disabled){border-color:var(--dsw-alias-brand-primary,#4d8bff)}',
-      '.dmb-btn.primary{background:var(--dsw-alias-brand-primary,#4d8bff);border-color:transparent;color:#fff}',
-      '.dmb-btn.danger{color:var(--dsw-alias-state-error-primary,#e5484d)}',
-      '.dmb-btn:disabled{opacity:.55;cursor:default}',
-      '.dmb-hint{color:var(--dsw-alias-text-secondary,#a8a8a8);line-height:1.5;font-size:12px}',
-      '.dmb-ok{color:var(--dsw-alias-state-success-primary,#30a46c);line-height:1.5}',
-      '.dmb-err{color:var(--dsw-alias-state-error-primary,#e5484d);line-height:1.5;white-space:pre-wrap}',
-      '.dmb-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}',
-      '.dmb-stat{padding:9px 10px;border-radius:8px;background:var(--dsw-alias-bg-primary,rgba(127,127,127,.08));border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.16))}',
-      '.dmb-k{font-size:11px;color:var(--dsw-alias-text-secondary,#a8a8a8);margin-bottom:3px}',
-      '.dmb-v{font-weight:600;word-break:break-all}',
+      '.dmb-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}',
+      '.dmb-wrap .dmb-input{flex:1 1 260px;min-width:0;width:100%;padding:7px 9px;border-radius:7px;border:1px solid var(--dsw-alias-border-l2,#aaa);background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#202020);font-family:inherit;font-size:13px}',
+      '.dmb-input::placeholder{color:var(--dsw-alias-label-secondary,#686868);opacity:1}',
+      '.dmb-input:focus,.dmb-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#4d8bff);outline-offset:2px}',
+      '.dmb-wrap .dmb-btn{padding:6px 12px;border-radius:7px;border:1px solid var(--dsw-alias-border-l2,#aaa);background:var(--dsw-alias-bg-layer-2,#f1f1f1);color:var(--dsw-alias-label-primary,#202020);cursor:pointer;font-family:inherit;font-size:13px;line-height:1.5;white-space:nowrap}',
+      '.dmb-wrap .dmb-btn:hover:not(:disabled){border-color:var(--dsw-alias-label-primary,#202020)}',
+      // Use an inverse text/surface pair: a theme's brand accent may itself be white.
+      '.dmb-wrap .dmb-btn.primary{background:var(--dsw-alias-label-primary,#202020);border-color:transparent;color:var(--dsw-alias-bg-base,#fff)}',
+      '.dmb-wrap .dmb-btn.danger{color:var(--dsw-alias-state-error-primary,#c52a32)}',
+      '.dmb-wrap .dmb-btn:disabled{background:var(--dsw-alias-bg-layer-2,#f1f1f1);border-color:var(--dsw-alias-border-l1,#d8d8d8);color:var(--dsw-alias-label-secondary,#686868);opacity:1;cursor:not-allowed}',
+      '.dmb-hint{color:var(--dsw-alias-label-secondary,#686868);line-height:1.5;font-size:12px;overflow-wrap:anywhere}',
+      '.dmb-ok{color:var(--dsw-alias-state-success-primary,#218147);line-height:1.5;overflow-wrap:anywhere}',
+      '.dmb-err{color:var(--dsw-alias-state-error-primary,#c52a32);line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}',
+      '.dmb-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:8px}',
+      '.dmb-stat{min-width:0;padding:9px 10px;border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f1f1f1);border:1px solid var(--dsw-alias-border-l1,#d8d8d8)}',
+      '.dmb-k{font-size:11px;color:var(--dsw-alias-label-secondary,#686868);margin-bottom:3px}',
+      '.dmb-v{font-weight:600;overflow-wrap:anywhere}',
       '.dmb-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}',
-      '.dmb-badge.on{background:rgba(48,164,108,.16);color:var(--dsw-alias-state-success-primary,#30a46c)}',
-      '.dmb-badge.off{background:rgba(229,72,77,.14);color:var(--dsw-alias-state-error-primary,#e5484d)}',
+      '.dmb-badge.on{background:rgba(48,164,108,.16);color:var(--dsw-alias-state-success-primary,#218147)}',
+      '.dmb-badge.off{background:rgba(229,72,77,.14);color:var(--dsw-alias-state-error-primary,#c52a32)}',
       '.dmb-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}',
     ].join('');
 
@@ -173,7 +174,6 @@ window.__ModuleLoader__.load({
       var e = useState(''); var error = e[0], setError = e[1];
       var n = useState(''); var notice = n[0], setNotice = n[1];
       var k = useState(''); var keyValue = k[0], setKeyValue = k[1];
-      var sk = useState(false); var showKey = sk[0], setShowKey = sk[1];
       var b = useState(false); var busy = b[0], setBusy = b[1];
       var d = useState(''); var dirValue = d[0], setDirValue = d[1];
       var touchedDir = React.useRef(false);
@@ -210,18 +210,17 @@ window.__ModuleLoader__.load({
         }
         run(request('setApiKey', { token: value }).then(function () {
           setKeyValue('');
-          setShowKey(false);
           return refresh();
         }), t.keyOk);
       }
 
       function testKey() {
         var value = keyValue.trim();
-        if (!/^[0-9a-fA-F]{64}$/.test(value)) {
+        if ((value !== '' && !/^[0-9a-fA-F]{64}$/.test(value)) || (value === '' && !(status && status.key && status.key.configured))) {
           setError(t.keyHint);
           return;
         }
-        run(request('testApiKey', { token: value }), t.keyOk);
+        run(request('testApiKey', value === '' ? {} : { token: value }), t.testOk);
       }
 
       function clearKey() {
@@ -300,18 +299,20 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dmb-row' },
             h('input', {
               className: 'dmb-input',
-              type: showKey ? 'text' : 'password',
+              type: 'password',
+              'aria-label': t.keySection,
+              disabled: busy,
               value: keyValue,
               autoComplete: 'off',
               spellCheck: false,
               placeholder: key.configured && key.tail ? t.keySavedPlaceholder + key.tail + (t === STRINGS.zh ? '）' : ')') : t.keyPlaceholder,
               onChange: function (event) { setKeyValue(event.target.value); },
-            }),
-            h('button', { type: 'button', className: 'dmb-btn', disabled: busy, onClick: function () { setShowKey(!showKey); } }, showKey ? t.hide : t.show)
+            })
           ),
+          h('div', { className: 'dmb-hint' }, t.testHint),
           h('div', { className: 'dmb-row' },
             h('button', { type: 'button', className: 'dmb-btn primary', disabled: busy || keyValue.trim() === '', onClick: saveKey }, t.saveTest),
-            h('button', { type: 'button', className: 'dmb-btn', disabled: busy || keyValue.trim() === '', onClick: testKey }, t.test),
+            h('button', { type: 'button', className: 'dmb-btn', disabled: busy || loading || (keyValue.trim() === '' && !key.configured), onClick: testKey }, t.test),
             h('button', { type: 'button', className: 'dmb-btn danger', disabled: busy || !key.configured, onClick: clearKey }, t.clear)
           )
         ),
@@ -324,11 +325,13 @@ window.__ModuleLoader__.load({
               className: 'dmb-input dmb-mono',
               type: 'text',
               value: dirValue,
+              'aria-label': t.cacheSection,
+              disabled: busy,
               spellCheck: false,
               onChange: function (event) { touchedDir.current = true; setDirValue(event.target.value); },
             }),
             h('button', { type: 'button', className: 'dmb-btn', disabled: busy, onClick: pickDir }, t.pick),
-            h('button', { type: 'button', className: 'dmb-btn primary', disabled: busy || dirValue.trim() === '', onClick: saveDir }, t.saveDir)
+            h('button', { type: 'button', className: 'dmb-btn primary', disabled: busy || loading || dirValue.trim() === '' || dirValue.trim() === (saved || dataDir.active), onClick: saveDir }, t.saveDir)
           ),
           h('div', { className: 'dmb-hint' },
             t.active + ': ' + (dataDir.active || '—') + ' · ' + t.defaultDir + ': ' + (dataDir.default || '—')

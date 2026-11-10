@@ -43,7 +43,7 @@ async function makeSettings(overrides = {}) {
   const engine = {
     async ready() {},
     status() {
-      return { version: '2.7.1', cache_file: join(active, 'cache.db'), cache: { cards: 3 }, last_sync: 12345, active_task: null };
+      return { version: '2.7.2', cache_file: join(active, 'cache.db'), cache: { cards: 3 }, last_sync: 12345, active_task: null };
     },
   };
   const settings = createSettings({
@@ -122,6 +122,46 @@ test('testApiKey does not persist a candidate key', async () => {
   }
 });
 
+test('testApiKey uses the saved Host key when omitted, without persisting or returning it', async () => {
+  const env = await makeSettings();
+  try {
+    await env.settings.setApiKey(VALID_KEY);
+    const cipher = env.store.values.get('api_key');
+    env.client.calls.length = 0;
+    const result = await env.settings.testApiKey();
+    assert.deepEqual(result, { ok: true, tested: true });
+    assert.deepEqual(env.client.calls, [VALID_KEY]);
+    assert.equal(JSON.stringify(result).includes(VALID_KEY), false);
+    assert.equal(env.store.values.get('api_key'), cipher);
+    for (const invalid of ['', ' ', null, 42, 'bad']) {
+      await assert.rejects(() => env.settings.testApiKey(invalid), error => error.code === 'invalid_api_key');
+    }
+    assert.deepEqual(env.client.calls, [VALID_KEY]);
+  } finally {
+    await rm(env.root, { recursive: true, force: true });
+  }
+});
+
+test('testApiKey waits for startup credentials and rejects a missing saved key', async () => {
+  let current = '';
+  let release;
+  const keyReady = new Promise(resolve => { release = resolve; });
+  const env = await makeSettings({ getApiKey: () => current, keyReady });
+  try {
+    const pending = env.settings.testApiKey();
+    assert.equal(env.client.calls.length, 0);
+    current = VALID_KEY;
+    release();
+    await pending;
+    assert.deepEqual(env.client.calls, [VALID_KEY]);
+    current = '';
+    await assert.rejects(() => env.settings.testApiKey(), error => error.code === 'invalid_api_key');
+  } finally {
+    release();
+    await rm(env.root, { recursive: true, force: true });
+  }
+});
+
 test('setDataDir rejects relative paths and non-empty targets', async () => {
   const env = await makeSettings();
   try {
@@ -184,6 +224,13 @@ test('the authenticated settings route handles GET and validates POST actions', 
     assert.equal(badResponse.status, 400);
     const bad = await badResponse.json();
     assert.equal(bad.error.code, 'invalid_api_key');
+    await env.settings.setApiKey(VALID_KEY);
+    const testResponse = await routes[0].fetch(new Request('http://localhost' + SETTINGS_ROUTE, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'testApiKey' }),
+    }));
+    assert.equal(testResponse.status, 200);
+    assert.deepEqual(await testResponse.json(), { ok: true, tested: true });
   } finally {
     await rm(env.root, { recursive: true, force: true });
   }
