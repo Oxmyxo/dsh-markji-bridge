@@ -209,12 +209,12 @@ test('an engine read sees writes pushed by another engine process', async () => 
     await b.engine.sync({ mode: 'pull', full: true });
 
     await a.engine.updateCard({ card: card.id, content: '进程 A 的修改' });
-    const seenByB = await b.engine.getCard({ card: card.id });
+    const seenByB = await b.engine.getCard({ card: card.id, include_fields: ['status'] });
     assert.equal(seenByB.card.content, '进程 A 的修改');
     assert.equal(seenByB.card.status, 'dirty');
 
     await a.engine.sync({ mode: 'push' });
-    const fresh = await b.engine.getCard({ card: card.id });
+    const fresh = await b.engine.getCard({ card: card.id, include_fields: ['status'] });
     assert.equal(fresh.card.content, '进程 A 的修改');
     assert.equal(fresh.card.status, 'synced');
     assert.equal(mock.findCard(card.id).content, '进程 A 的修改');

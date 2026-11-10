@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -31,7 +31,8 @@ for (const name of expected) if (!registered.has(name)) throw new Error('missing
 const syncDef = registered.get('markji_sync');
 const status = await syncDef.execute({ action: 'state' });
 if (!status || !status.cache || typeof status.cache.cards !== 'number') throw new Error('state output: ' + JSON.stringify(status));
-if (status.version !== '2.7.1') throw new Error('status version: ' + status.version);
+const packageVersion = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
+if (status.version !== packageVersion) throw new Error('status version: ' + status.version);
 const progress = await syncDef.execute({ action: 'progress' });
 if (!progress || !Array.isArray(progress.tasks)) throw new Error('progress output: ' + JSON.stringify(progress));
 const failures = await syncDef.execute({ action: 'failures' });
@@ -49,6 +50,10 @@ if (!pictureHelp || pictureHelp.ok !== true || pictureHelp.tag !== 'Pic') {
 }
 if (!cardsDef.parameters.properties.cards || !cardsDef.parameters.properties.new_cards || !cardsDef.parameters.properties.updates) {
   throw new Error('markji_cards batch schema');
+}
+const outputFields = cardsDef.parameters.properties.include_fields;
+if (!outputFields || outputFields.type !== 'array' || !outputFields.items.enum.includes('text') || !outputFields.items.enum.includes('status')) {
+  throw new Error('markji_cards include_fields schema');
 }
 const createItem = cardsDef.parameters.properties.new_cards.items.properties;
 if (!createItem.deck || !createItem.chapter) throw new Error('markji_cards item target schema');

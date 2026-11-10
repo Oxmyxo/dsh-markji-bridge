@@ -108,7 +108,8 @@ test('markji_cards action=get returns several cards in request order and isolate
     assert.deepEqual(result.missing, ['missing_card_id']);
     assert.equal(result.cards[0].id, alsoGood.id);
     assert.match(result.cards[0].content, /第二张/);
-    assert.equal(result.cards[0].text, undefined, 'text is omitted by default');
+    assert.deepEqual(Object.keys(result.cards[0]).sort(), ['content', 'id']);
+    assert.deepEqual(Object.keys(result.cards[1]).sort(), ['content', 'id']);
     assert.equal(result.cards[1].id, good.id);
 
     const withText = await call('markji_cards', { action: 'get', cards: [good.id], include_text: true });
@@ -342,7 +343,7 @@ test('markji_cards action=create queues several local cards and isolates a bad i
     assert.match(result.results[0].card_id, /^local_cd/);
     assert.match(result.results[1].card_id, /^local_cd/);
     assert.equal(result.results[2].ok, false);
-    const first = await engine.getCard({ card: result.results[0].card_id });
+    const first = await engine.getCard({ card: result.results[0].card_id, include_fields: ['status', 'chapter_id'] });
     assert.equal(first.card.content, '批量新建一');
     assert.equal(first.card.status, 'new');
     assert.equal(first.card.chapter_id, chapter.id);
@@ -396,7 +397,7 @@ test('markji_cards action=create can target different chapters and decks per ite
     assert.equal(result.results[3].ok, false);
     assert.match(result.results[3].error.message, /needs deck and chapter/);
 
-    const crossDeck = await engine.getCard({ card: result.results[2].card_id });
+    const crossDeck = await engine.getCard({ card: result.results[2].card_id, include_fields: ['deck_id', 'chapter_id'] });
     assert.equal(crossDeck.card.deck_id, otherDeck.id);
     assert.equal(crossDeck.card.chapter_id, otherChapter.id);
     assert.equal(crossDeck.card.content, '跨卡组');

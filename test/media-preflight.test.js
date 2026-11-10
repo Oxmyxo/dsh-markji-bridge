@@ -99,10 +99,10 @@ test('pushes valid media and reports missing ids without writing them', async ()
     assert.ok(invalidError, 'invalid syntax is reported: ' + JSON.stringify(report.errors));
     assert.equal(invalidError.code, 'invalid_card_content');
 
-    const missingCard = await engine.getCard({ card: missing.card_id });
+    const missingCard = await engine.getCard({ card: missing.card_id, include_fields: ['status', 'last_error'] });
     assert.equal(missingCard.card.status, 'new');
     assert.equal(missingCard.card.last_error.code, 'media_unavailable');
-    const invalidCard = await engine.getCard({ card: invalid.card_id });
+    const invalidCard = await engine.getCard({ card: invalid.card_id, include_fields: ['last_error'] });
     assert.equal(invalidCard.card.last_error.code, 'invalid_card_content');
     assert.equal(mock.state.cards.some((card) => card.content.includes('bad')), false);
   });
@@ -141,7 +141,7 @@ test('keeps media cards queued when file availability cannot be checked', async 
     const error = report.errors.find((entry) => entry.id === card.card_id);
     assert.ok(error);
     assert.equal(error.code, 'media_check_failed');
-    const view = await engine.getCard({ card: card.card_id });
+    const view = await engine.getCard({ card: card.card_id, include_fields: ['status'] });
     assert.equal(view.card.status, 'new');
   });
 });

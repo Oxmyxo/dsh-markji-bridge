@@ -694,7 +694,7 @@ invalid_argument before any row is evaluated.
   no description or deck_name, use scope=deck for the parent). With a filter active, deck groups
   with no matching chapters are omitted. ChapterView = { id, name, card_count, pending?, local?,
   missing? }; getChapter/chapter_get (detail=true) adds revision, order and updated_time.
-- listCards -> { total, offset, limit, has_more, cards: [CardSummary], hint? }.
+- listCards -> { total, offset, limit, has_more, cards: [CardView], hint? }.
   scope=all|deck|chapter (deck requires deck, chapter requires chapter; a supplied deck+chapter
   must agree). deck_name/chapter_name are case-insensitive substrings; updated_after/
   updated_before accept ISO 8601 or epoch milliseconds (numbers or numeric strings) and compare
@@ -703,14 +703,30 @@ invalid_argument before any row is evaluated.
   (including status, revision, updated_time, content, cloud, etc.). text is the plain-text view
   with formatting, media, data URIs and base64 excluded; content keeps the rich text. A
   zero-result call with a filter gets a hint. refresh=true forces a pull (otherwise the pull TTL
-  applies). CardSummary = { id, deck_name, chapter_name, snippet, status? }; status is present
-  only when it is dirty, new or conflict; revision, ids and updated_time are available through
-  getCard.
-- getCard -> { card: { id, deck_id, deck_name, chapter_id, chapter_name, content, text,
-  grammar_version, status, cloud: {revision, updated_time} | null, pending?,
-  conflict: ConflictView|null, last_error?, created_time, updated_time } }. content is the rich
-  text needed for updates; text is the plain-text view used for reading/searching. Null optional
-  fields (local/pending/conflict/last_error) are omitted.
+  applies). Projection runs after filtering and pagination; filters use the full internal
+  cardFilterValues, never the projected output. CardView defaults to exactly { id, content }.
+- getCard -> { card: CardView }; getCards -> { cards: [CardView], missing?: [id] }.
+  These engine methods, not just the tools, default to { id, content }. content is the unchanged
+  original Markji rich text, preserving formatting tags, media references, whitespace, and full
+  length. It is never replaced by plain text or a snippet. chapter_get(with_cards=true) keeps
+  its separate CardSummary = { id, deck_name, chapter_name, snippet, status? } contract.
+- lib/card-fields.js defines the shared output allow-list and strict readCardFields parser.
+  include_fields is an optional array of exact field names: id, content, deck_id, deck_name,
+  chapter_id, chapter_name, status, text, snippet, grammar_version, revision, updated_time,
+  created_time, local, pending, conflict, last_error, cloud. id/content are always retained;
+  duplicates collapse, and omitted/[] selects only id/content. Unknown names, nested paths,
+  non-string entries and non-arrays (including null) fail with invalid_argument even when
+  no rows match. include_text accepts only booleans; true adds text, false does not remove
+  explicitly requested text. Names are case-sensitive and are not trimmed.
+- Requested absent optional fields are returned as null (local defaults to false). cloud keeps
+  its cardDetail meaning { revision, updated_time } | null, not raw cached cloud.content.
+  cardReadView returns a fresh projection without deleting metadata from the cached card.
+  The tool also projects into fresh objects, preserving engine-returned records and outer
+  envelopes (pagination, hint, missing). Output selection does not change cache persistence,
+  sync behavior or filter allow-lists, and needs no database migration.
+- Upgrade migration (2.8.0): callers that relied on old list metadata must request
+  include_fields: ['deck_name', 'chapter_name', 'status', 'snippet']; detail callers explicitly
+  list any required metadata. Do not reuse the removed legacy fields argument.
 - Writes validate: deck/chapter/card exist in cache (error unknown_deck|unknown_chapter|
   unknown_card with a hint to call markji_sync mode=pull full=true), non-empty content
   (max 100000 chars), identical content and grammar_version -> { ok: true, changed: false }.
@@ -787,8 +803,8 @@ markji_decks | chapter_get | { chapter, deck?, with_cards?, refresh? } | engine.
 markji_decks | chapter_create | { deck, name, order? } | engine.editChapter({ action:'create' })
 markji_decks | chapter_rename | { chapter, name, deck? } | engine.editChapter({ action:'rename' })
 markji_decks | chapter_sort | { deck, chapter_ids } | engine.editChapter({ action:'sort' })
-markji_cards | list (default) | { scope?, deck?, chapter?, filter?, deck_name?, chapter_name?, updated_after?, updated_before?, limit?, offset?, refresh? } | engine.listCards
-markji_cards | get | { card?, cards?: string[], include_text? } | engine.getCards (per-id ok/error, one refresh on miss)
+markji_cards | list (default) | { scope?, deck?, chapter?, filter?, deck_name?, chapter_name?, updated_after?, updated_before?, limit?, offset?, refresh?, include_fields?, include_text? } | engine.listCards
+markji_cards | get | { card?, cards?: string[], include_fields?, include_text? } | engine.getCards ({cards, missing?}, one refresh on miss)
 markji_cards | create | { deck?, chapter?, new_cards: [{content, deck?, chapter?, order?, grammar_version?}] } | engine.createCard per item (top-level targets are defaults; batch result)
 markji_cards | update | { card, content, grammar_version? } or { updates: [{card, content, grammar_version?}] } | engine.updateCard per item (batch result)
 markji_cards | move | { cards: string[], to_chapter, deck?, order? } | engine.moveCards
@@ -817,18 +833,19 @@ moved.
 
 ### Batch semantics
 
-`getCards({ cards })` de-duplicates ids while preserving request order, runs one
-`ensureFresh` and at most one `forcePullForMissing('cards')`, then returns
-`{ cards: [CardView], missing?: [id] }`; the tool strips `card.text` unless
-`include_text` is true. `markji_cards({ action:'create' })` resolves each `new_cards` item's deck/chapter from the item
+`getCards({ cards, include_fields?, include_text? })` de-duplicates ids while preserving
+request order, runs one `ensureFresh` and at most one `forcePullForMissing('cards')`, then
+returns `{ cards: [CardView], missing?: [id] }`. Each CardView defaults to exactly id/content,
+with only explicitly requested extra fields added; no tool-side deletion mutates the engine
+result. `markji_cards({ action:'create' })` resolves each `new_cards` item's deck/chapter from the item
 or the top-level defaults, then calls the single-card engine method once per
 item; `action:'update'` does the same for `updates`, catch each failure, preserve result order, and return
 `total / created|updated / failed / partial` plus per-item results. Before queueing, both
 create and update call the shared preflight (validateCardContent + optional client.queryFiles)
 and return errors/warnings/media on the item; a failed item is not queued. Batch writes are not
 transactional: successful items stay queued when another item fails. Every new batch entry is capped at
-`MAX_BATCH_ITEMS = 50` (archive / move keep their existing behavior); batch get
-defaults `include_text` to false to stay inside the tool-output budget.
+`MAX_BATCH_ITEMS = 50` (archive / move keep their existing behavior). Output metadata is
+opt-in for both single and batch reads; original content is always retained.
 
 ### Failure report
 

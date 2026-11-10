@@ -97,7 +97,7 @@ try {
   assert.ok(conflict, 'conflict recorded: ' + JSON.stringify(report.conflicts));
   assert.equal(mock.findCard(cardA.id).content, '阿尔法 云端修改 2', 'conflicted card not pushed over remote');
   assert.equal(mock.findCard(cardB.id).content, '贝塔 本地修改 2', 'other card still pushed');
-  const conflicted = await engine.getCard({ card: cardA.id });
+  const conflicted = await engine.getCard({ card: cardA.id, include_fields: ['status'] });
   assert.equal(conflicted.card.status, 'conflict');
   assert.equal(conflicted.card.content, '阿尔法 本地修改 2', 'local intent kept');
   pass('conflict recorded, other cards keep syncing, local intent preserved');
@@ -115,7 +115,7 @@ try {
   assert.ok(remoteCard, 'card created on the cloud');
   assert.equal(remoteCard.deck_id, deck.id);
   assert.ok(remoteChapter.card_ids.includes(remoteCard.id));
-  const remapped = await engine.getCard({ card: remoteCard.id });
+  const remapped = await engine.getCard({ card: remoteCard.id, include_fields: ['status'] });
   assert.equal(remapped.card.id, remoteCard.id, 'cache re-keyed to the real id');
   assert.equal(remapped.card.status, 'synced');
   pass('new chapter and card created, local ids remapped to cloud ids');

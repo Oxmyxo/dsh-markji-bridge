@@ -47,7 +47,7 @@ test('markji_cards list filters by deck name, chapter name, plain text and updat
   const dir = await mkdtemp(join(tmpdir(), 'markji-filter-list-'));
   const { store, engine } = await makeEngine(dir);
   try {
-    const all = await engine.listCards({});
+    const all = await engine.listCards({ include_fields: ['deck_name', 'chapter_name'] });
     assert.equal(all.total, 3);
     assert.deepEqual(all.cards.map((card) => card.id), ['k1', 'k2', 'k3']);
     assert.equal(all.cards[0].deck_name, 'C/C++');
@@ -59,7 +59,7 @@ test('markji_cards list filters by deck name, chapter name, plain text and updat
     const byChapter = await engine.listCards({ chapter_name: 'spi' });
     assert.deepEqual(byChapter.cards.map((card) => card.id), ['k3']);
 
-    const byText = await engine.listCards({ filter: { field: 'text', op: 'contains', value: '变量' } });
+    const byText = await engine.listCards({ filter: { field: 'text', op: 'contains', value: '变量' }, include_fields: ['snippet'] });
     assert.equal(byText.total, 1);
     assert.equal(byText.cards[0].id, 'k1');
     assert.match(byText.cards[0].snippet, /变量/);

@@ -111,7 +111,7 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 - Batch actions accept at most 50 items (multi-card reads, `new_cards`, `updates`, bulk conflict resolution); archive and move use a non-empty array. `action=get` collapses duplicate ids and keeps request order; unknown ids are listed in `missing` and do not abort the batch.
 - The top-level `deck` / `chapter` of `action=create` are optional defaults; each `new_cards` item may set its own `deck` / `chapter`, so one call can span chapters or decks. An item with no target is reported as a per-item error; each item's `order` is relative to its final target chapter.
 - Results list `ok`, `warnings`, and errors per item. Writes are not a transaction: bad items (syntax errors, missing media, unknown targets) are not queued while the other items are; successful items still need `markji_sync({ action: "start" })`.
-- `action=get` omits the redundant `text` view by default; pass `include_text: true` when needed.
+- Each card in `action=get` / `list` defaults to `{id, content}` only. `content` is the original Markji rich text, not stripped text or a rewritten snippet. Use `include_fields` for extra metadata or plain text; the legacy `include_text: true` flag still adds `text`.
 - `create` / `update` perform both syntax and media checks by default; a failed media query returns `media_check_failed` for that item and can be retried. `checkMediaOnWrite: false` skips the extra query, but `markji_sync` still checks before pushing.
 - Batch output can exceed `maxOutputChars`; split large operations into smaller batches.
 
@@ -162,8 +162,8 @@ Only four tools are registered; `action` selects the operation, and omitting it 
 | `markji_decks` / `chapter_create` | `deck` `name` `order?` | `{ok, action, chapter_id, deck_id, status, pending, message}` |
 | `markji_decks` / `chapter_rename` | `chapter` `name` `deck?` | `{ok, action, chapter_id, status, pending, message}` |
 | `markji_decks` / `chapter_sort` | `deck` `chapter_ids` | `{ok, action, deck_id, chapters, status, pending, message}` |
-| `markji_cards` / `list` | `scope?` `deck?` `chapter?` `filter?` `deck_name?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, cards}`; when a filter returns nothing it also carries `hint` |
-| `markji_cards` / `get` | `card?` `cards?` (1-50, deduplicated) `include_text?` | `{cards, missing?}`; `missing` appears only when some ids are unknown |
+| `markji_cards` / `list` | `scope?` `deck?` `chapter?` `filter?` `deck_name?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` `include_fields?` `include_text?` | `{total, offset, limit, has_more, cards}`; when a filter returns nothing it also carries `hint` |
+| `markji_cards` / `get` | `card?` `cards?` (1-50, deduplicated) `include_fields?` `include_text?` | `{cards, missing?}`; `missing` appears only when some ids are unknown |
 | `markji_cards` / `create` | `new_cards` (1-50; each `{content, deck?, chapter?, order?, grammar_version?}`); top-level `deck?` `chapter?` are defaults | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`; failed items carry `errors` / `warnings` / `media` and are not queued |
 | `markji_cards` / `update` | `card` `content` `grammar_version?`, or `updates` (1-50, each `{card, content, grammar_version?}`) | single: `{ok, card_id, status, changed, pending, message, warnings?}`; batch: `{ok, action, mode, total, updated, unchanged, failed, partial, results}`; failed items are not queued |
 | `markji_cards` / `move` | `cards` `to_chapter` `deck?` `order?` | `{ok, moved, to_chapter_id, status, pending, message}` |
@@ -177,6 +177,23 @@ Only four tools are registered; `action` selects the operation, and omitting it 
 | `markji_sync` / `resolve` | `id` (single); or `ids` + `strategy`; or `items: [{id, strategy, content?}]` (≤50, per-item strategy) | single keeps `{ok, id, entity, strategy, state, changed}`; batch returns `{ok, total, resolved, failed, results:[{id, ok, changed, state?, strategy?, error?}]}` |
 | `markji_file` / `upload` | `path` `deck?` | `{file}` |
 | `markji_file` / `query` | `ids` `expires?` | `{files}` |
+
+### Card output fields and upgrade migration
+
+Starting in **2.8.0**, each card returned by `markji_cards` `get` / `list` contains only `id` and the original `content` by default. The engine methods `getCard` / `getCards` / `listCards` follow the same contract. Deck/chapter names, status, snippets, and plain text are no longer implicit. Pagination fields, empty-result `hint`, batch deduplication/order, and `missing` keep their existing behavior. Card summaries from `chapter_get({with_cards:true})` are outside this change.
+
+```text
+markji_cards({ action: "list" })  // cards: [{id, content}, ...]
+markji_cards({ action: "list", include_fields: ["deck_name", "chapter_name", "status", "snippet"] })
+markji_cards({ action: "get", card: "<id>", include_fields: ["text", "revision", "updated_time"] })
+markji_cards({ action: "get", cards: ["<id1>", "<id2>"], include_fields: ["pending", "conflict", "last_error"] })
+```
+
+`include_fields` is an array of additional field names. Omit it or pass `[]` for `{id, content}` only; `id` / `content` are always retained even when not listed, and duplicate names are collapsed. Exact allowed names: `id`, `content`, `deck_id`, `deck_name`, `chapter_id`, `chapter_name`, `status`, `text`, `snippet`, `grammar_version`, `revision`, `updated_time`, `created_time`, `local`, `pending`, `conflict`, `last_error`, `cloud`. There are no wildcards or nested output paths: `cloud.revision` is not an output field name. Requested optional fields that are absent return `null`, except `local` returns `false`. `cloud` retains its existing `{revision, updated_time}` or `null` meaning.
+
+Names are case-sensitive and are not trimmed. A non-array value (including `null`), non-string item, or unknown field fails with `invalid_argument` instead of being ignored. `include_text` accepts booleans only: `true` adds `text`, and `false` does not remove `text` explicitly requested by `include_fields`. Output selection does not narrow the fields available to `filter` or mutate the cache; no resync or database migration is required.
+
+**Migrating old callers:** add `include_fields: ["deck_name", "chapter_name", "status", "snippet"]` when relying on list metadata, and explicitly request the detail metadata your code needs. Do not reuse the removed legacy `fields` parameter. Callers that only read or update original content need no changes: `content` is never replaced by `text` or `snippet`.
 
 ### `filter` fields
 
@@ -218,17 +235,16 @@ ChapterView = {
   revision?, order?, updated_time?,
 }
 
-CardSummary = {
+CardSummary = {  // chapter_get({with_cards:true}), not the markji_cards get/list default
   id, deck_name, chapter_name, snippet,
   status?: "dirty" | "new" | "conflict",
 }
 
-CardView = {
-  id, deck_id, deck_name, chapter_id, chapter_name,
-  content: string, text: string, grammar_version: number,
-  status, cloud: null | { revision, updated_time },
-  created_time, updated_time,
-  local?, pending?, conflict?, last_error?,
+CardView = {  // markji_cards get/list default; include_fields adds requested fields
+  id, content: string,
+  // Optional output: deck_id, deck_name, chapter_id, chapter_name, status,
+  // text, snippet, grammar_version, revision, created_time, updated_time,
+  // local, pending, conflict, last_error, cloud: null | { revision, updated_time }
 }
 
 ConflictView = {

@@ -87,14 +87,14 @@ test('filter and card views use plain text, not base64 or formatting tags', asyn
       const result = await engine.listCards({ filter: { field: 'text', op: 'contains', value } });
       assert.equal(result.total, 0, 'filter must not match media/markup: ' + value);
     }
-    const hit = await engine.listCards({ filter: { field: 'text', op: 'contains', value: '关键词' } });
+    const hit = await engine.listCards({ filter: { field: 'text', op: 'contains', value: '关键词' }, include_fields: ['snippet'] });
     assert.equal(hit.total, 1);
     assert.equal(hit.cards[0].id, 'k1');
     assert.doesNotMatch(hit.cards[0].snippet, /base64|T#B#|Pic#ID/);
-    const listed = await engine.listCards({ filter: { field: 'text', op: 'contains', value: '答案' } });
+    const listed = await engine.listCards({ filter: { field: 'text', op: 'contains', value: '答案' }, include_fields: ['snippet'] });
     assert.equal(listed.total, 1);
     assert.doesNotMatch(listed.cards[0].snippet, /base64|T#B#|Pic#ID/);
-    const detail = await engine.getCard({ card: 'k1' });
+    const detail = await engine.getCard({ card: 'k1', include_fields: ['text'] });
     assert.equal(detail.card.text, '问题\n\n答案  图 关键词');
     assert.match(detail.card.content, /data:image\/png;base64,/);
   } finally {

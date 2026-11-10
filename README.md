@@ -111,7 +111,7 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 - 单次最多 50 项（多卡读取、`new_cards`、`updates`、冲突批量解决）；归档和移动使用非空数组。`action=get` 会去重并保持请求顺序，未知 id 放入 `missing`，不会中断整批。
 - `action=create` 的顶层 `deck` / `chapter` 是默认值，可以省略；每个 `new_cards` 项可写自己的 `deck` / `chapter`，所以一次调用能跨章节 / 卡组。未提供目标的项会逐条报错；每项的 `order` 相对于该项最终的目标章节。
 - 结果逐项列出 `ok`、`warnings` 和错误；写操作不是事务，坏项（语法错误、媒体缺失、目标不存在）不会入队，其他项仍会排队。成功项仍需 `markji_sync({ action: "start" })` 推送。
-- `action=get` 默认不返回冗余的 `text`，需要时传 `include_text: true`。
+- `action=get` / `list` 的每条卡片默认仅返回 `{id, content}`，`content` 是原始 Markji 富文本（不去标签、不改写、不变成摘要）；用 `include_fields` 按需附加元数据或纯文本。旧参数 `include_text: true` 仍兼容，相当于额外请求 `text`。
 - `create` / `update` 默认同时做语法和媒体校验；媒体查询失败时该条返回 `media_check_failed`，可重试。`checkMediaOnWrite: false` 可跳过这道额外查询，但 `markji_sync` 推送前仍会检查。
 - 批量输出可能超过 `maxOutputChars`，内容多时请拆小批次。
 
@@ -162,8 +162,8 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | `markji_decks` / `chapter_create` | `deck` `name` `order?` | `{ok, action, chapter_id, deck_id, status, pending, message}` |
 | `markji_decks` / `chapter_rename` | `chapter` `name` `deck?` | `{ok, action, chapter_id, status, pending, message}` |
 | `markji_decks` / `chapter_sort` | `deck` `chapter_ids` | `{ok, action, deck_id, chapters, status, pending, message}` |
-| `markji_cards` / `list` | `scope?` `deck?` `chapter?` `filter?` `deck_name?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` | `{total, offset, limit, has_more, cards}`；无结果且传了 `filter` 时带 `hint` |
-| `markji_cards` / `get` | `card?` `cards?`（1-50，去重）`include_text?` | `{cards, missing?}`；`missing` 仅在存在未知 id 时出现 |
+| `markji_cards` / `list` | `scope?` `deck?` `chapter?` `filter?` `deck_name?` `chapter_name?` `updated_after?` `updated_before?` `limit?` `offset?` `refresh?` `include_fields?` `include_text?` | `{total, offset, limit, has_more, cards}`；无结果且传了 `filter` 时带 `hint` |
+| `markji_cards` / `get` | `card?` `cards?`（1-50，去重）`include_fields?` `include_text?` | `{cards, missing?}`；`missing` 仅在存在未知 id 时出现 |
 | `markji_cards` / `create` | `new_cards`（1-50；每项 `{content, deck?, chapter?, order?, grammar_version?}`）；顶层 `deck?` `chapter?` 是默认值 | `{ok, action, mode, deck_id, chapter_id, total, created, failed, partial, results}`；失败项含 `errors` / `warnings` / `media`，语法或媒体失败不入队 |
 | `markji_cards` / `update` | `card` `content` `grammar_version?`，或 `updates`（1-50，每项 `{card, content, grammar_version?}`） | 单条：`{ok, card_id, status, changed, pending, message, warnings?}`；批量：`{ok, action, mode, total, updated, unchanged, failed, partial, results}`；失败项不入队 |
 | `markji_cards` / `move` | `cards` `to_chapter` `deck?` `order?` | `{ok, moved, to_chapter_id, status, pending, message}` |
@@ -177,6 +177,23 @@ markji_cards({ action: "move", cards: ["<id1>", "<id2>"], to_chapter: "<chapter>
 | `markji_sync` / `resolve` | `id`（单条）；或 `ids` + `strategy`；或 `items: [{id, strategy, content?}]`（≤50，逐条策略） | 单条保持 `{ok, id, entity, strategy, state, changed}`；批量 `{ok, total, resolved, failed, results:[{id, ok, changed, state?, strategy?, error?}]}` |
 | `markji_file` / `upload` | `path` `deck?` | `{file}` |
 | `markji_file` / `query` | `ids` `expires?` | `{files}` |
+
+### 卡片输出字段与升级迁移
+
+从 **2.8.0** 起，`markji_cards` 的 `get` / `list` 默认每条只有 `id` 和原文 `content`；引擎的 `getCard` / `getCards` / `listCards` 也遵守同一规则。不再默认输出卡组、章节、状态、摘要或纯文本。外层分页字段、空结果 `hint`、批量去重顺序与 `missing` 的行为不变；章节详情 `chapter_get({with_cards:true})` 的卡片摘要不在这次变更范围内。
+
+```text
+markji_cards({ action: "list" })  // cards: [{id, content}, ...]
+markji_cards({ action: "list", include_fields: ["deck_name", "chapter_name", "status", "snippet"] })
+markji_cards({ action: "get", card: "<id>", include_fields: ["text", "revision", "updated_time"] })
+markji_cards({ action: "get", cards: ["<id1>", "<id2>"], include_fields: ["pending", "conflict", "last_error"] })
+```
+
+`include_fields` 是附加字段名数组。省略或 `[]` 都只返回 `{id, content}`；`id` / `content` 始终保留，即使未列出；重复字段去重。允许的精确字段名为：`id`、`content`、`deck_id`、`deck_name`、`chapter_id`、`chapter_name`、`status`、`text`、`snippet`、`grammar_version`、`revision`、`updated_time`、`created_time`、`local`、`pending`、`conflict`、`last_error`、`cloud`。没有通配符或嵌套输出路径；`cloud.revision` 不能用作输出字段名。请求了但缺失的可选字段返回 `null`，唯独 `local` 返回 `false`；`cloud` 保持 `{revision, updated_time}` 或 `null` 的既有含义。
+
+字段名大小写和空格必须精确；非数组（包括 `null`）、非字符串元素或未知字段都报 `invalid_argument`，不会静默忽略。`include_text` 只接受布尔值：`true` 额外添加 `text`，`false` 不会删除 `include_fields` 已明确请求的 `text`。`include_fields` 只控制输出，不限制 `filter` 可使用的字段，也不修改缓存；无需重新同步或迁移数据库。
+
+**迁移旧调用：**依赖列表的卡组 / 章节 / 状态 / 摘要时，增加 `include_fields: ["deck_name", "chapter_name", "status", "snippet"]`；依赖详情元数据时显式列出所需字段。不要使用已移除的旧参数 `fields`。只读或修改原文的调用无需更改，`content` 不会被 `text` 或 `snippet` 替代。
 
 ### `filter` 字段
 
@@ -218,17 +235,16 @@ ChapterView = {
   revision?, order?, updated_time?,
 }
 
-CardSummary = {
+CardSummary = {  // chapter_get({with_cards:true})，不是 markji_cards get/list 默认值
   id, deck_name, chapter_name, snippet,
   status?: "dirty" | "new" | "conflict",
 }
 
-CardView = {
-  id, deck_id, deck_name, chapter_id, chapter_name,
-  content: string, text: string, grammar_version: number,
-  status, cloud: null | { revision, updated_time },
-  created_time, updated_time,
-  local?, pending?, conflict?, last_error?,
+CardView = {  // markji_cards get/list 默认；按 include_fields 附加字段
+  id, content: string,
+  // 可选输出：deck_id, deck_name, chapter_id, chapter_name, status,
+  // text, snippet, grammar_version, revision, created_time, updated_time,
+  // local, pending, conflict, last_error, cloud: null | { revision, updated_time }
 }
 
 ConflictView = {
