@@ -10,6 +10,9 @@ Four action-based `markji_*` tools, implemented with Node.js built-in modules on
 
 ## Features
 
+- **Transient read diagnostics (2.8.2)**: failed sync tasks retain safe HTTP status, method and relative endpoint path, without query, headers or request bodies. An explicit HTTP 200 `success: false / common_internal_error` envelope is retried within the existing budget only for GET, never replaying POST. Persistent upstream 503 failures still fail and preserve the cache rather than reporting false success.
+
+- **Explicit refresh fails honestly (2.8.2)**: reads that support `refresh: true` report pull failures or missing configuration instead of silently returning old cached data. Ordinary reads without explicit refresh retain offline fallback.
 - **Local cache**: one SQLite file, `cache.db`, stores indexes, card bodies, the pending queue, conflicts, and sync tasks. Routine searches and reads do not call the API.
 - **Unified list filtering (JSON condition tree)**: card `list`, deck `list`, and `chapter_list` all take one `filter` parameter, each with its own field set; there is no separate `search` action; every filter is expressed through `filter`:
   - `filter`: a JSON condition tree, never JavaScript. A condition is `{ field, op, value, case_sensitive?, flags? }`; groups are `{ all: [...] }` / `{ any: [...] }` / `{ not: {...} }`; ops are `eq`, `ne`, `contains`, `starts_with`, `ends_with`, `regex`, `in`, `not_in`, `gt`, `gte`, `lt`, `lte`, and `exists`. Regex `flags` accepts `imsu` (default `i`), and `case_sensitive: true` disables the default case-insensitive string/regex matching. Omit `filter` or pass `{}` to list everything.

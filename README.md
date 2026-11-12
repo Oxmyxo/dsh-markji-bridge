@@ -10,6 +10,9 @@
 
 ## 特性
 
+- **瞬时读取故障诊断（2.8.2）**：失败同步任务保留安全的 HTTP 状态、方法和相对接口路径（不含查询参数、请求头或正文）。HTTP 200 中明确的 `success: false / common_internal_error` 仅对 GET 按现有次数预算退避重试，不重放 POST；持续的云端 503 仍会失败并保留缓存，不伪装同步成功。
+
+- **显式刷新不伪成功（2.8.2）**：支持 `refresh: true` 的读接口在拉取失败或未配置密钥时明确报错，不静默返回旧缓存；未要求刷新的普通读仍保留离线缓存回退。
 - **本地缓存**：单个 SQLite 文件 `cache.db`，索引、卡片正文、待推送队列、冲突和同步任务都在一个库里，日常搜索和阅读不请求 API。
 - **统一列表过滤（JSON 条件树）**：`markji_cards` 的 `list`、`markji_decks` 的 `list` / `chapter_list` 使用同一个 `filter` 参数（字段集各自独立），没有单独的 `search` action，所有过滤都由 `filter` 完成：
   - `filter`：JSON 条件树，不是 JS。条件为 `{ field, op, value, case_sensitive?, flags? }`，组合为 `{ all: [...] }` / `{ any: [...] }` / `{ not: {...} }`；op 支持 `eq`、`ne`、`contains`、`starts_with`、`ends_with`、`regex`、`in`、`not_in`、`gt`、`gte`、`lt`、`lte`、`exists`。正则用 `flags` 设置 `imsu`（默认 `i`），`case_sensitive: true` 也可关闭字符串匹配和正则的默认大小写不敏感。`filter` 省略或传 `{}` 表示不过滤。
